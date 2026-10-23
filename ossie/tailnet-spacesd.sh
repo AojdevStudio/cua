@@ -5,7 +5,7 @@
 # stable tailnet port (from 43211 up, kept in $ports), forwards it to the
 # current loopback port with `tailscale serve --tcp`, and drops the forward
 # when the container is deleted. It only touches forwards listed in $ports.
-# It reconciles at start, on every container start or stop, and every 30 s
+# It reconciles at start, on every container start or stop, and after 30 s with no event
 # (a container can start before the event stream connects, as at boot, and
 # Docker or Tailscale can be down), and reconnects when the event stream ends.
 set -uo pipefail
