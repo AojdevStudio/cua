@@ -5,9 +5,9 @@
 # stable tailnet port (from 43211 up, kept in $ports), forwards it to the
 # current loopback port with `tailscale serve --tcp`, and drops the forward
 # when the container is deleted. It only touches forwards listed in $ports.
-# It reconciles at start and on every container start or stop, retries every
-# 30 s while a reconcile failed (Docker or Tailscale down), and reconnects when
-# the Docker event stream ends.
+# It reconciles at start, on every container start or stop, and every 30 s
+# (a container can start before the event stream connects, as at boot, and
+# Docker or Tailscale can be down), and reconnects when the event stream ends.
 set -uo pipefail
 export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ports="${CUA_BOTS_PAIRING_PORTS:-$HOME/.local/share/cua-bots/tailnet-ports}"
@@ -67,7 +67,6 @@ while :; do
   if ! reconcile; then sleep 30; continue; fi
   docker events --filter type=container --filter event=start --filter event=die --filter event=destroy \
     --format '{{.Actor.Attributes.name}}' 2>/dev/null | {
-    dirty=false
     while :; do
       # bash 3.2 returns 1 for both a timeout and the end of the stream; the
       # end comes at once, a timeout after 30 s.
@@ -76,10 +75,8 @@ while :; do
         is_bot "$name" || continue
       elif (( SECONDS - started < 25 )); then
         break
-      elif ! $dirty; then
-        continue
       fi
-      if reconcile; then dirty=false; else dirty=true; fi
+      reconcile
     done
   }
   sleep 5
