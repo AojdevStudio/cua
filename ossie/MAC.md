@@ -29,10 +29,16 @@ ossie/report.sh                                            # window snapshot and
 - `run-cuabots.sh` reads `CLIPROXYAPI_KEY_CUABOTS` from BWS, waits for OrbStack,
   and starts the app with `CUA_BOTS_SEED=Obi:claude-code`, so a fresh install
   creates Obi on This Mac.
-- Docker publishes Obi's spacesd on `127.0.0.1` with a random port.
-  `tailnet-spacesd.sh` forwards the same port on the Tailscale address with
-  `tailscale serve --tcp`, on every container start or stop. The LAN never sees it.
-- The app writes the pairing link with `CUA_BOTS_PAIRING_HOST`, the Tailscale name.
+- Docker publishes Obi's spacesd on `127.0.0.1`, on a new random port at every
+  container start. `tailnet-spacesd.sh` gives each bot a stable Tailscale port
+  (from 43211, kept in `~/.local/share/cua-bots/tailnet-ports`) and forwards it
+  there with `tailscale serve --tcp`, on every container start or stop. The LAN
+  never sees it. It touches only forwards listed in that file.
+- The app writes the pairing link with `CUA_BOTS_PAIRING_HOST` (the Tailscale
+  name) and the stable port from that file, so the link survives a reboot.
+- After a reboot the app boots each bot's stopped Space again. A run that died
+  with it is dropped, and the next message starts a fresh one in the same Space
+  (Obi keeps its memory file, not the old Claude Code session).
 - `SIGUSR1` makes the app write a window snapshot (ScreenCaptureKit, current
   process only, so no Screen Recording grant) and the pairing links.
 - `phone-roundtrip.sh` acts as the phone from another tailnet Mac: reads the

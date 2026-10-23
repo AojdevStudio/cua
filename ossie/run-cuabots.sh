@@ -4,6 +4,8 @@
 # install-runtime.sh copies it. The model key is read from BWS here, at run
 # time, and never written to disk.
 set -euo pipefail
+# The pairing file and the app's data hold the spacesd token: owner only.
+umask 077
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 app="$here/CuaBots"
 export PATH="$HOME/.orbstack/bin:$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -29,6 +31,7 @@ export CUA_BOTS_SHOW_COMPUTER=1
 export CUA_BOTS_SNAPSHOT_DIR="$here/snapshots"
 export CUA_BOTS_PAIRING_FILE="$here/PAIRING.local.md"
 export CUA_BOTS_PAIRING_HOST="aojdevmac-m5.tail3a79a5.ts.net"
+export CUA_BOTS_PAIRING_PORTS="$here/tailnet-ports"
 
 # The app and the tailnet forwarder live and die together, so launchd's
 # KeepAlive restarts both when the app quits.
@@ -38,7 +41,7 @@ forwarder=$!
 app_pid=$!
 stop_forwarder() { pkill -P "$forwarder" 2>/dev/null; kill "$forwarder" 2>/dev/null; }
 trap 'kill "$app_pid" 2>/dev/null; stop_forwarder' TERM INT HUP
-wait "$app_pid"
-status=$?
+status=0
+wait "$app_pid" || status=$?
 stop_forwarder
 exit "$status"

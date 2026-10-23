@@ -11,7 +11,7 @@ import ScreenCaptureKit
 ///
 /// * `CUA_BOTS_SEED=Name:harness` creates that bot on This Mac when no bot of
 ///   that name exists, so a fresh install comes up with its bot.
-/// * `CUA_BOTS_SHOW_COMPUTER=1` opens the first bot's computer at launch.
+/// * `CUA_BOTS_SHOW_COMPUTER=1` opens the first bot's computer once it is up.
 /// * `SIGUSR1` writes a report: the window to
 ///   `$CUA_BOTS_SNAPSHOT_DIR/<time>.png` and each bot's iPhone pairing link
 ///   to `$CUA_BOTS_PAIRING_FILE`.
@@ -25,7 +25,19 @@ enum SelfHost {
         if env["CUA_BOTS_SHOW_COMPUTER"] == "1", let first = model.store.bots.first {
             model.route = .bot(first.id)
             model.showProfile = false
-            model.showComputer = true
+            // After a reboot the Space is still booting. The window keeps the
+            // first stream it opens, so open it once the screen answers.
+            Task {
+                await model.store.wake(first.id)
+                if let bot = model.store.bot(first.id), let engine = model.engine {
+                    var tries = 0
+                    while tries < 90, await engine.pointer(bot) == nil {
+                        tries += 1
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                }
+                model.showComputer = true
+            }
         }
         signal(SIGUSR1, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)

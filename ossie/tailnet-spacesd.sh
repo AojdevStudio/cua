@@ -1,42 +1,69 @@
 #!/bin/bash
 # Makes each bot Space's spacesd reachable from the tailnet, and only there.
-# Docker publishes spacesd (guest port 3211) on 127.0.0.1 with a random host
-# port. This forwards the same port number on this Mac's Tailscale address to
-# it with `tailscale serve --tcp`, and drops forwards whose Space is gone. It
-# reconciles at start and on every container start or stop, so a recreated
-# Space with a new port is picked up. Forwards it owns map P to 127.0.0.1:P.
+# Docker publishes spacesd (guest port 3211) on 127.0.0.1 with a host port it
+# picks again at every container start. This gives each bot container a
+# stable tailnet port (from 43211 up, kept in $ports), forwards it to the
+# current loopback port with `tailscale serve --tcp`, and drops the forward
+# when the container is deleted. It only touches forwards listed in $ports.
+# It reconciles at start and on every container start or stop, and reconnects
+# when the Docker event stream ends.
 set -uo pipefail
 export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+ports="${CUA_BOTS_PAIRING_PORTS:-$HOME/.local/share/cua-bots/tailnet-ports}"
+touch "$ports"
 
-wanted() {
-  for c in $(docker ps --format '{{.Names}}' | grep -E '(^|[-_])bot-'); do
-    docker port "$c" 3211/tcp 2>/dev/null | sed -n 's/^127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p'
-  done | sort -u
-}
+is_bot() { [[ $1 =~ (^|[-_])bot- ]]; }
 
-owned() {
+serve_tcp() {
   tailscale serve status --json | /usr/bin/python3 -c '
 import json, sys
-tcp = (json.load(sys.stdin) or {}).get("TCP") or {}
-for port, h in tcp.items():
-    if h.get("TCPForward") == "127.0.0.1:" + port:
-        print(port)' | sort -u
+for port, h in ((json.load(sys.stdin) or {}).get("TCP") or {}).items():
+    print(port, h.get("TCPForward", "-"))'
 }
 
 reconcile() {
-  local want have
-  want=$(wanted)
-  have=$(owned)
-  for p in $(comm -23 <(echo "$want") <(echo "$have")); do
-    tailscale serve --bg --tcp "$p" "tcp://127.0.0.1:$p" >/dev/null && echo "tailnet-spacesd: forwarding :$p"
-  done
-  for p in $(comm -13 <(echo "$want") <(echo "$have")); do
-    tailscale serve --tcp "$p" off >/dev/null && echo "tailnet-spacesd: dropped :$p"
+  docker info >/dev/null 2>&1 || return 0
+  local all running serving name port target loopback next
+  all=$(docker ps -a --format '{{.Names}}')
+  running=$(docker ps --format '{{.Names}}')
+  serving=$(serve_tcp) || return 0
+
+  while read -r name port; do
+    [[ -n $name ]] || continue
+    if ! grep -qx "$name" <<<"$all"; then
+      tailscale serve --tcp "$port" off >/dev/null 2>&1
+      sed -i '' "/^$name /d" "$ports"
+      echo "tailnet-spacesd: $name is gone, dropped :$port"
+    fi
+  done < "$ports"
+
+  for name in $running; do
+    is_bot "$name" || continue
+    loopback=$(docker port "$name" 3211/tcp 2>/dev/null | sed -n 's/^127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p')
+    [[ -n $loopback ]] || continue
+    port=$(awk -v n="$name" '$1 == n { print $2 }' "$ports")
+    if [[ -z $port ]]; then
+      next=43211
+      while awk '{ print $2 }' "$ports" | grep -qx "$next" || awk '{ print $1 }' <<<"$serving" | grep -qx "$next"; do
+        next=$((next + 1))
+      done
+      port=$next
+      echo "$name $port" >> "$ports"
+    fi
+    target=$(awk -v p="$port" '$1 == p { print $2 }' <<<"$serving")
+    [[ $target == "127.0.0.1:$loopback" ]] && continue
+    [[ -n $target ]] && tailscale serve --tcp "$port" off >/dev/null 2>&1
+    tailscale serve --bg --tcp "$port" "tcp://127.0.0.1:$loopback" >/dev/null &&
+      echo "tailnet-spacesd: $name :$port -> 127.0.0.1:$loopback"
   done
 }
 
-reconcile
-docker events --filter type=container --filter event=start --filter event=die --format '{{.Actor.Attributes.name}}' |
-  while read -r name; do
-    [[ $name =~ (^|[-_])bot- ]] && reconcile
-  done
+while :; do
+  reconcile
+  docker events --filter type=container --filter event=start --filter event=die --filter event=destroy \
+    --format '{{.Actor.Attributes.name}}' 2>/dev/null |
+    while read -r name; do
+      is_bot "$name" && reconcile
+    done
+  sleep 5
+done

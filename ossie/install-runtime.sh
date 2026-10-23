@@ -16,6 +16,8 @@ export PATH="$HOME/.orbstack/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
 (cd "$repo/examples/cua-bots-macos" && swift build -c release --product CuaBots)
 
 mkdir -p "$dest"
+chmod 700 "$dest"
+[[ -f $dest/PAIRING.local.md ]] && chmod 600 "$dest/PAIRING.local.md"
 install -m 755 "$repo/examples/cua-bots-macos/.build/release/CuaBots" "$dest/CuaBots"
 install -m 644 "$repo/libs/cua/swift/lib/libcua_sdk.dylib" "$dest/libcua_sdk.dylib"
 install -m 755 "$here/run-cuabots.sh" "$here/tailnet-spacesd.sh" "$dest/"
