@@ -204,9 +204,9 @@ struct SignInSheet: View {
                     .font(.callout).foregroundStyle(.secondary)
                 HStack {
                     Image(systemName: "person.crop.circle")
-                    Text(item.account ?? item.label)
+                    Text(item.title)
                     Spacer()
-                    Text("\(item.summary.cookies.count) cookies · \(item.summary.passwords) passwords")
+                    Text(item.kind.replacingOccurrences(of: "_", with: " "))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(12)
