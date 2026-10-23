@@ -45,13 +45,17 @@ asc() { (cd "$repo" && bun ossie/asc.ts "$@"); }
 # The app record is the one step only Ossie can do (the API refuses to create apps).
 (( upload )) && asc check
 
-keys="$(mktemp -d)"
-chmod 700 "$keys"
+# The user keychain search list, restored on exit. Taken before anything is
+# written, so cleanup always has a list to restore.
+listed="$(security list-keychains -d user)"
 saved_keychains=()
 while IFS= read -r line; do
   line="${line#"${line%%[![:space:]]*}"}"; line="${line#\"}"; line="${line%\"}"
   [[ -n "$line" ]] && saved_keychains+=("$line")
-done < <(security list-keychains -d user)
+done <<<"$listed"
+(( ${#saved_keychains[@]} )) || { echo "the user keychain search list is empty, refusing to change it" >&2; exit 1; }
+keys="$(mktemp -d)"
+chmod 700 "$keys"
 cleanup() {
   if [[ -f "$keys/signing.keychain-db" ]]; then
     security list-keychains -d user -s "${saved_keychains[@]}" || echo "could not restore the keychain search list" >&2
