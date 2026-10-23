@@ -45,6 +45,8 @@ public final class BotStore: ObservableObject {
     /// follow.
     public var onTasksChanged: ((Bot, [BotTask]) -> Void)?
 
+    /// How far each run's events have been read, by run ID. Saved, so a
+    /// restarted app doesn't replay turns it already showed.
     private var cursors: [String: UInt64] = [:]
     private var turnText: [String: (turn: UInt32, text: String)] = [:]
     private var pollers: [String: Task<Void, Never>] = [:]
@@ -364,10 +366,10 @@ public final class BotStore: ObservableObject {
     /// Poll once; returns whether the bot is idle.
     @discardableResult
     public func pollOnce(_ id: String) async -> Bool {
-        guard let engine, let bot = bot(id), bot.runID != nil else { return true }
+        guard let engine, let bot = bot(id), let run = bot.runID else { return true }
         do {
-            let (updates, cursor) = try await engine.poll(bot, cursor: cursors[id] ?? 0)
-            cursors[id] = cursor
+            let (updates, cursor) = try await engine.poll(bot, cursor: cursors[run] ?? 0)
+            cursors[run] = cursor
             for u in updates { handle(id, u) }
         } catch {
             // A poll that fails once is not news; the next one retries.
@@ -595,6 +597,7 @@ public final class BotStore: ObservableObject {
         var approvals: [ApprovalRequest]
         var notifications: [BotNotification]
         var bots: [Bot]
+        var cursors: [String: UInt64]?
     }
 
     var stateURL: URL { dataDirectory.appendingPathComponent("state.json") }
@@ -602,7 +605,8 @@ public final class BotStore: ObservableObject {
     public func save() {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
-        let saved = Saved(messages: messages, approvals: approvals, notifications: notifications, bots: bots)
+        let saved = Saved(messages: messages, approvals: approvals, notifications: notifications, bots: bots,
+                          cursors: cursors)
         if let data = try? e.encode(saved) { try? data.write(to: stateURL, options: .atomic) }
         for bot in bots { try? volume.writeJSON(bot, VolumeLayout.identity(bot.id)) }
     }
@@ -615,6 +619,7 @@ public final class BotStore: ObservableObject {
             messages = saved.messages
             approvals = saved.approvals
             notifications = saved.notifications
+            cursors = saved.cursors ?? [:]
             for b in saved.bots { runtime[b.id] = b }
         }
         // The Volume is the source of truth for which bots exist.

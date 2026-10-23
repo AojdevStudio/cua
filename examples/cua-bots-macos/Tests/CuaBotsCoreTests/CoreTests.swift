@@ -197,12 +197,40 @@ final class ScriptedEngine: BotEngine {
     func reset(_ bot: Bot) async throws { resetCount += 1 }
 }
 
+/// The daemon keeps a run's events: a poll reads from its cursor on, as
+/// `agent_events` does.
+@MainActor
+final class ReplayingEngine: BotEngine {
+    private var events: [EngineUpdate] = []
+
+    func provision(_ bot: Bot, progress: @escaping @MainActor (EnginePhase) -> Void) async throws -> String {
+        "local:\(bot.spaceName)"
+    }
+
+    func start(_ bot: Bot, volume: VolumeStore, prompt: String) async throws -> String {
+        events += [.assistant(turn: 1, text: "Hi Sam, I'm Ada."), .turnEnded(turn: 1)]
+        return "run-1"
+    }
+
+    func poll(_ bot: Bot, cursor: UInt64) async throws -> (updates: [EngineUpdate], cursor: UInt64) {
+        (Array(events.dropFirst(Int(cursor))), UInt64(events.count))
+    }
+
+    func send(_ bot: Bot, text: String) async throws {}
+    func checkpoint(_ bot: Bot, volume: VolumeStore) async throws {}
+    func push(_ bot: Bot, volume: VolumeStore) async throws {}
+    func interrupt(_ bot: Bot) async throws {}
+    func pause(_ bot: Bot) async throws {}
+    func resume(_ bot: Bot) async throws {}
+    func reset(_ bot: Bot) async throws {}
+}
+
 @MainActor
 @Suite(.serialized)
 struct StoreTests {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("cua-bots-tests-" + UUID().uuidString)
 
-    func makeStore(_ engine: ScriptedEngine) -> BotStore {
+    func makeStore(_ engine: any BotEngine) -> BotStore {
         BotStore(volume: LocalVolume(root: root.appendingPathComponent("volume")),
                  dataDirectory: root.appendingPathComponent("data"), engine: engine)
     }
@@ -287,6 +315,17 @@ struct StoreTests {
         #expect(again.bots.map(\.name) == ["Felipe"])
         #expect(again.bots.first?.avatar.ears == .round)
         #expect(again.bots.first?.runID == "run-1")
+    }
+
+    @Test func testRestartDoesNotRepeatAFinishedTurn() async throws {
+        let engine = ReplayingEngine()
+        let store = makeStore(engine)
+        let bot = await store.createBot(name: "Ada", avatar: .default(for: "Ada"), harness: .claudeCode,
+                                        placement: .local)
+        await store.pollOnce(bot.id)
+        let again = makeStore(engine)
+        await again.pollOnce(bot.id)
+        #expect(again.messages(for: bot.id).filter { $0.text == "Hi Sam, I'm Ada." }.count == 1)
     }
 
     @Test func testLockedRulesSurviveEdits() async throws {
