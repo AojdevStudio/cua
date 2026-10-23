@@ -21,7 +21,9 @@ export CMAKE_POLICY_VERSION_MINIMUM=3.5  # CMake 4 refuses audiopus_sys's bundle
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="$repo/examples/cua-bots-ios"
 out="$app/build/testflight"
-xcf="$repo/libs/cua/swift/build/CuaSDKFFI.xcframework"
+# Its own output dir: the default one may hold a plain cua-sdk build, which
+# lacks the Spaces symbols this app links.
+xcf_out="$repo/libs/cua/swift/build/spaces"
 
 rebuild=0
 upload=1
@@ -35,7 +37,7 @@ done
 
 [[ -z "${BWS_ACCESS_TOKEN:-}" && -f "$HOME/.env" ]] && { set -a; . "$HOME/.env"; set +a; }
 for key in APPLE_API_PRIVATE_KEY APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_TEAM_ID; do
-  [[ -n "${!key:-}" ]] || export "$key=$(hush get --key "$key")"
+  [[ -n "${!key:-}" ]] || export "$key=$(hush get --key "$key" < /dev/null)"
 done
 
 asc() { (cd "$repo" && bun ossie/asc.ts "$@"); }
@@ -45,10 +47,16 @@ asc() { (cd "$repo" && bun ossie/asc.ts "$@"); }
 
 keys="$(mktemp -d)"
 chmod 700 "$keys"
-keychains="$(security list-keychains -d user | xargs)"
+saved_keychains=()
+while IFS= read -r line; do
+  line="${line#"${line%%[![:space:]]*}"}"; line="${line#\"}"; line="${line%\"}"
+  [[ -n "$line" ]] && saved_keychains+=("$line")
+done < <(security list-keychains -d user)
 cleanup() {
-  # shellcheck disable=SC2086 # the saved list is space-separated paths
-  [[ -f "$keys/signing.keychain-db" ]] && { security list-keychains -d user -s $keychains; security delete-keychain "$keys/signing.keychain-db"; }
+  if [[ -f "$keys/signing.keychain-db" ]]; then
+    security list-keychains -d user -s "${saved_keychains[@]}" || echo "could not restore the keychain search list" >&2
+    security delete-keychain "$keys/signing.keychain-db" || true
+  fi
   rm -rf "$keys"
 }
 trap cleanup EXIT
@@ -62,19 +70,32 @@ export API_PRIVATE_KEYS_DIR="$keys"
 # and id live in BWS. A throwaway keychain holds the identity for this run, so
 # the login keychain (locked over ssh) is never needed.
 signing() {
-  local key cert_id kc="$keys/signing.keychain-db" pass
-  key="$(hush get --key CUABOTS_DISTRIBUTION_KEY 2>/dev/null || true)"
-  if [[ -z "$key" ]]; then
+  local names certs cert_id="" kc="$keys/signing.keychain-db" pass pub id content
+  # A failed lookup must stop the run, never read as "missing": that would
+  # create another team certificate.
+  names="$(hush list < /dev/null | cut -f2)"
+  if ! grep -qx CUABOTS_DISTRIBUTION_KEY <<<"$names"; then
     openssl genrsa -traditional -out "$keys/dist.key" 2048 2>/dev/null
     # Base64 on stdin: bws reads a value that starts with "-----" as a flag,
     # and a --value would show in ps.
     base64 < "$keys/dist.key" | tr -d '\n' | hush add --key CUABOTS_DISTRIBUTION_KEY --project "API Keys" \
       --note "Base64 PEM private key of the Cua Bots Apple Distribution certificate (ossie/ship-testflight.sh)"
   else
-    printf '%s' "$key" | base64 -d > "$keys/dist.key"
+    hush get --key CUABOTS_DISTRIBUTION_KEY < /dev/null | base64 -d > "$keys/dist.key"
   fi
   chmod 600 "$keys/dist.key"
-  cert_id="$(hush get --key CUABOTS_DISTRIBUTION_CERT_ID 2>/dev/null || true)"
+  if grep -qx CUABOTS_DISTRIBUTION_CERT_ID <<<"$names"; then
+    cert_id="$(hush get --key CUABOTS_DISTRIBUTION_CERT_ID < /dev/null)"
+  else
+    # A run that created the certificate but failed to store its id: find it
+    # by its public key before making another.
+    pub="$(openssl rsa -in "$keys/dist.key" -pubout -outform der 2>/dev/null | shasum -a 256)"
+    certs="$(asc distribution-certs)"
+    while read -r id content; do
+      [[ "$(printf '%s' "$content" | base64 -d | openssl x509 -inform der -noout -pubkey \
+        | openssl pkey -pubin -outform der | shasum -a 256)" == "$pub" ]] && cert_id="$id"
+    done <<<"$certs"
+  fi
   if [[ -z "$cert_id" ]]; then
     openssl req -new -key "$keys/dist.key" -subj "/CN=Cua Bots Distribution/C=US" -out "$keys/dist.csr"
     cert_id="$(asc create-cert "$keys/dist.csr")"
@@ -93,8 +114,7 @@ signing() {
   security import "$keys/dist.cer" -k "$kc" >/dev/null
   security import "$keys/wwdr.cer" -k "$kc" >/dev/null
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pass" "$kc" >/dev/null
-  # shellcheck disable=SC2086
-  security list-keychains -d user -s "$kc" $keychains
+  security list-keychains -d user -s "$kc" "${saved_keychains[@]}"
 
   identity="$(openssl x509 -inform der -in "$keys/dist.cer" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g')"
   profile_uuid="$(security cms -D -i "$keys/dist.mobileprovision" | plutil -extract UUID raw -)"
@@ -106,18 +126,22 @@ signing() {
   echo "signing: certificate $cert_id ($identity), profile $profile_uuid"
 }
 
-latest="$(ls -1 "$out" 2>/dev/null | sort -V | tail -1 || true)"
-if (( rebuild )) || [[ -z "$latest" || ! -f "$out/$latest/CuaBots.ipa" ]]; then
-  # UTC date.minute (20261023.520), so every archive gets a new, increasing
+# The newest exported ipa, by file time (the build number is in its dir name).
+latest_ipa="$(ls -t "$out"/*/CuaBots.ipa 2>/dev/null | head -1 || true)"
+latest="$( [[ -n "$latest_ipa" ]] && basename "$(dirname "$latest_ipa")" || true)"
+if (( rebuild )) || [[ -z "$latest" ]]; then
+  # UTC date.hhmmss (20261023.52233), so every archive gets a new, increasing
   # build number and each part stays a small integer.
-  now="$(date -u +%Y%m%d%H%M)"
+  now="$(date -u +%Y%m%d%H%M%S)"
   build="${now:0:8}.$((10#${now:8}))"
   dir="$out/$build"
-  mkdir -p "$dir"
-  [[ -d "$xcf" ]] || (cd "$repo/libs/cua/swift" && scripts/build-xcframework.sh --ios --package cua-spaces-ffi)
+  mkdir -p "$out"
+  mkdir "$dir" || { echo "$dir already exists, rerun in a second" >&2; exit 1; }
+  [[ -d "$xcf_out/CuaSDKFFI.xcframework" ]] \
+    || (cd "$repo/libs/cua/swift" && scripts/build-xcframework.sh --ios --package cua-spaces-ffi --out "$xcf_out")
   (cd "$app" && xcodegen generate --quiet)
   # Package.swift reads CUA_SWIFT_XCFRAMEWORK when xcodebuild resolves packages.
-  export CUA_SWIFT_XCFRAMEWORK=build/CuaSDKFFI.xcframework
+  export CUA_SWIFT_XCFRAMEWORK=build/spaces/CuaSDKFFI.xcframework
   # Archive unsigned; the export below signs the app for the App Store.
   xcodebuild -project "$app/CuaBots.xcodeproj" -scheme CuaBotsApp -configuration Release \
     -destination generic/platform=iOS -archivePath "$dir/CuaBots.xcarchive" \

@@ -6,6 +6,7 @@
 //                                           build to the internal group "Ossie"
 //   bun ossie/asc.ts create-cert <csr.pem>  new Apple Distribution certificate, prints its id
 //   bun ossie/asc.ts cert <id>              prints that certificate (base64 DER)
+//   bun ossie/asc.ts distribution-certs     prints "<id> <base64 DER>" per distribution cert
 //   bun ossie/asc.ts profile <cert-id>      prints the App Store profile (base64)
 //
 // The signing commands log to stderr, so the printed value can be captured.
@@ -205,6 +206,15 @@ async function createCertificate(csrPath: string) {
   console.log(created.data.id);
 }
 
+// Every Apple Distribution certificate on the team, one "<id> <base64 DER>"
+// line each, so a key can find its certificate.
+async function distributionCertificates() {
+  const certs = await get<Page<Certificate>>(
+    "/certificates?filter[certificateType]=DISTRIBUTION&fields[certificates]=certificateContent&limit=200",
+  );
+  for (const cert of certs.data) console.log(`${cert.id} ${cert.attributes.certificateContent}`);
+}
+
 async function certificate(id: string) {
   const cert = await get<One<Certificate>>(`/certificates/${id}?fields[certificates]=certificateType,certificateContent,expirationDate`);
   console.error(`certificate: ${id} ${cert.data.attributes.certificateType}, expires ${cert.data.attributes.expirationDate}`);
@@ -256,6 +266,7 @@ async function main(argv: string[]) {
   const [command, arg] = argv;
   if (command === "create-cert" && arg) return createCertificate(arg);
   if (command === "cert" && arg) return certificate(arg);
+  if (command === "distribution-certs") return distributionCertificates();
   if (command === "profile" && arg) return profile(arg);
   const buildNumber = arg;
   const app = await findApp();
@@ -275,7 +286,7 @@ async function main(argv: string[]) {
   }
   if (command !== "distribute" || !buildNumber) {
     console.error(
-      "usage: bun ossie/asc.ts check | uploaded <build> | distribute <build> | create-cert <csr> | cert <id> | profile <cert-id>",
+      "usage: bun ossie/asc.ts check | uploaded <build> | distribute <build> | create-cert <csr> | cert <id> | distribution-certs | profile <cert-id>",
     );
     process.exit(2);
   }
