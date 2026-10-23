@@ -5,8 +5,9 @@
 # stable tailnet port (from 43211 up, kept in $ports), forwards it to the
 # current loopback port with `tailscale serve --tcp`, and drops the forward
 # when the container is deleted. It only touches forwards listed in $ports.
-# It reconciles at start and on every container start or stop, and reconnects
-# when the Docker event stream ends.
+# It reconciles at start and on every container start or stop, retries every
+# 30 s while a reconcile failed (Docker or Tailscale down), and reconnects when
+# the Docker event stream ends.
 set -uo pipefail
 export PATH="$HOME/.orbstack/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ports="${CUA_BOTS_PAIRING_PORTS:-$HOME/.local/share/cua-bots/tailnet-ports}"
@@ -22,11 +23,11 @@ for port, h in ((json.load(sys.stdin) or {}).get("TCP") or {}).items():
 }
 
 reconcile() {
-  docker info >/dev/null 2>&1 || return 0
-  local all running serving name port target loopback next
+  docker info >/dev/null 2>&1 || return 1
+  local all running serving name port target loopback next failed=0
   all=$(docker ps -a --format '{{.Names}}')
   running=$(docker ps --format '{{.Names}}')
-  serving=$(serve_tcp) || return 0
+  serving=$(serve_tcp) || return 1
 
   while read -r name port; do
     [[ -n $name ]] || continue
@@ -53,17 +54,30 @@ reconcile() {
     target=$(awk -v p="$port" '$1 == p { print $2 }' <<<"$serving")
     [[ $target == "127.0.0.1:$loopback" ]] && continue
     [[ -n $target ]] && tailscale serve --tcp "$port" off >/dev/null 2>&1
-    tailscale serve --bg --tcp "$port" "tcp://127.0.0.1:$loopback" >/dev/null &&
+    if tailscale serve --bg --tcp "$port" "tcp://127.0.0.1:$loopback" >/dev/null; then
       echo "tailnet-spacesd: $name :$port -> 127.0.0.1:$loopback"
+    else
+      failed=1
+    fi
   done
+  return "$failed"
 }
 
 while :; do
-  reconcile
+  if ! reconcile; then sleep 30; continue; fi
   docker events --filter type=container --filter event=start --filter event=die --filter event=destroy \
-    --format '{{.Actor.Attributes.name}}' 2>/dev/null |
-    while read -r name; do
-      is_bot "$name" && reconcile
+    --format '{{.Actor.Attributes.name}}' 2>/dev/null | {
+    dirty=false
+    while :; do
+      if read -r -t 30 name; then
+        is_bot "$name" || continue
+      elif (( $? <= 128 )); then
+        break
+      elif ! $dirty; then
+        continue
+      fi
+      if reconcile; then dirty=false; else dirty=true; fi
     done
+  }
   sleep 5
 done

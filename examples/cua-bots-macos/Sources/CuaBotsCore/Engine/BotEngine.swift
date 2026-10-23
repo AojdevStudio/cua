@@ -11,6 +11,13 @@ public enum EngineUpdate: Equatable, Sendable {
     case tool(turn: UInt32, title: String)
     case turnEnded(turn: UInt32)
     case failed(String)
+
+    public var turn: UInt32? {
+        switch self {
+        case .assistant(let turn, _), .tool(let turn, _), .turnEnded(let turn): turn
+        case .failed: nil
+        }
+    }
 }
 
 /// Where a bot is in its life, as the engine reports it.

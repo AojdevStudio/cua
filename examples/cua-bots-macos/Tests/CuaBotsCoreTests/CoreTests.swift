@@ -348,6 +348,22 @@ struct StoreTests {
         #expect(again.messages(for: bot.id).contains { $0.text == "Hi Sam, I'm Ada." })
     }
 
+    @Test func testRestartAfterABatchThatEndsMidTurnRepeatsNothing() async throws {
+        let engine = ReplayingEngine()
+        engine.opening = [.assistant(turn: 1, text: "Hi Sam, I'm Ada."), .turnEnded(turn: 1),
+                          .assistant(turn: 2, text: "Looking into it.")]
+        let store = makeStore(engine)
+        let bot = await store.createBot(name: "Ada", avatar: .default(for: "Ada"), harness: .claudeCode,
+                                        placement: .local)
+        await store.pollOnce(bot.id)
+        engine.events.append(.turnEnded(turn: 2))
+        let again = makeStore(engine)
+        await again.pollOnce(bot.id)
+        let texts = again.messages(for: bot.id).map(\.text)
+        #expect(texts.filter { $0 == "Hi Sam, I'm Ada." }.count == 1)
+        #expect(texts.contains("Looking into it."))
+    }
+
     @Test func testARunThatDiedIsReplacedInTheSameSpace() async throws {
         let engine = ScriptedEngine()
         let store = makeStore(engine)

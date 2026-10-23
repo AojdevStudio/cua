@@ -50,6 +50,9 @@ public final class BotStore: ObservableObject {
     /// Where each run's last finished turn ends. Saved, so a restarted app
     /// neither repeats a turn it showed nor drops the start of one in flight.
     private var settledCursors: [String: UInt64] = [:]
+    /// Each run's last finished turn. Saved, so events replayed from a settled
+    /// cursor that ends mid-batch don't show a finished turn twice.
+    private var settledTurns: [String: UInt32] = [:]
     private var turnText: [String: (turn: UInt32, text: String)] = [:]
     private var pollers: [String: Task<Void, Never>] = [:]
     private var currentTask: [String: String] = [:]
@@ -397,7 +400,11 @@ public final class BotStore: ObservableObject {
         do {
             let (updates, cursor) = try await engine.poll(bot, cursor: cursors[run] ?? 0)
             cursors[run] = cursor
-            for u in updates { handle(id, u) }
+            for u in updates {
+                if let turn = u.turn, let settled = settledTurns[run], turn <= settled { continue }
+                handle(id, u)
+                if case .turnEnded(let turn) = u { settledTurns[run] = turn }
+            }
             switch updates.last {
             case .turnEnded?, .failed?:
                 settledCursors[run] = cursor
@@ -632,6 +639,7 @@ public final class BotStore: ObservableObject {
         var notifications: [BotNotification]
         var bots: [Bot]
         var cursors: [String: UInt64]?
+        var turns: [String: UInt32]?
     }
 
     var stateURL: URL { dataDirectory.appendingPathComponent("state.json") }
@@ -640,7 +648,7 @@ public final class BotStore: ObservableObject {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
         let saved = Saved(messages: messages, approvals: approvals, notifications: notifications, bots: bots,
-                          cursors: settledCursors)
+                          cursors: settledCursors, turns: settledTurns)
         if let data = try? e.encode(saved) { try? data.write(to: stateURL, options: .atomic) }
         for bot in bots { try? volume.writeJSON(bot, VolumeLayout.identity(bot.id)) }
     }
@@ -655,6 +663,7 @@ public final class BotStore: ObservableObject {
             notifications = saved.notifications
             settledCursors = saved.cursors ?? [:]
             cursors = settledCursors
+            settledTurns = saved.turns ?? [:]
             for b in saved.bots { runtime[b.id] = b }
         }
         // The Volume is the source of truth for which bots exist.
