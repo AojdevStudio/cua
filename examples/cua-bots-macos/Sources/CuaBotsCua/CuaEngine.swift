@@ -217,15 +217,23 @@ public final class CuaEngine: BotEngine {
     /// A link the iPhone app opens to reach this bot's computer directly:
     /// its spacesd address and token. On the same Mac (the iOS Simulator) the
     /// loopback address works; a phone elsewhere goes through the relay.
+    /// `CUA_BOTS_PAIRING_HOST` swaps the loopback host for one the phone can
+    /// reach (this Mac's Tailscale name, with the same port forwarded to
+    /// loopback by `tailscale serve`).
     public func pairingLink(_ bot: Bot) async throws -> String {
         guard let id = bot.spaceID else { throw EngineError.noSpace(bot.name) }
         let endpoint = try await cua.sandboxes().connect(name: id).service(name: "env").endpoint()
         let token = endpoint.headers.first { $0.name.lowercased().contains("authorization") }?.value
             .replacingOccurrences(of: "Bearer ", with: "") ?? ""
+        var url = URLComponents(string: endpoint.url)
+        if let host = ProcessInfo.processInfo.environment["CUA_BOTS_PAIRING_HOST"], !host.isEmpty {
+            url?.host = host
+        }
         var c = URLComponents()
         c.scheme = "cuabots"
         c.host = "direct"
-        c.queryItems = [URLQueryItem(name: "url", value: endpoint.url), URLQueryItem(name: "token", value: token)]
+        c.queryItems = [URLQueryItem(name: "url", value: url?.string ?? endpoint.url),
+                        URLQueryItem(name: "token", value: token)]
         return c.string ?? ""
     }
 
