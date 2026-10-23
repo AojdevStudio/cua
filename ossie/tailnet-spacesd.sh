@@ -69,9 +69,12 @@ while :; do
     --format '{{.Actor.Attributes.name}}' 2>/dev/null | {
     dirty=false
     while :; do
+      # bash 3.2 returns 1 for both a timeout and the end of the stream; the
+      # end comes at once, a timeout after 30 s.
+      started=$SECONDS
       if read -r -t 30 name; then
         is_bot "$name" || continue
-      elif (( $? <= 128 )); then
+      elif (( SECONDS - started < 25 )); then
         break
       elif ! $dirty; then
         continue
