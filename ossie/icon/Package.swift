@@ -1,4 +1,7 @@
 // swift-tools-version: 6.0
+// SPDX-License-Identifier: FSL-1.1-MIT
+// Copyright (c) 2026 Cua AI, Inc.
+
 import PackageDescription
 
 // Renders the iPhone app's 1024 px App Store icon from the koala the apps
