@@ -1,6 +1,6 @@
 // swift-tools-version: 6.0
 // SPDX-License-Identifier: FSL-1.1-MIT
-// Copyright (c) 2026 Cua AI, Inc.
+// Copyright (c) 2026 Ossie Irondi
 
 import PackageDescription
 

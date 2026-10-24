@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: FSL-1.1-MIT
-// Copyright (c) 2026 Cua AI, Inc.
+// Copyright (c) 2026 Ossie Irondi
 
 import CuaBotsCore
 import ImageIO
