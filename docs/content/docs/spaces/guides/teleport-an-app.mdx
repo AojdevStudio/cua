@@ -218,7 +218,7 @@ runs teleport; an SDK runtime without Cua Spaces raises
   <Tab value="Swift">
     ```swift test="excerpt" id="sw-teleport" source="examples/cua-bots-macos/Sources/CuaBotsCua/Keyvault.swift#sw-teleport"
     let receipt = try await space.teleport(app: item.providerId, scope: nil,
-                                           approver: SelectItems(label: item.label))
+                                           approver: SelectItems(label: item.title))
     ```
   </Tab>
 </Tabs>
