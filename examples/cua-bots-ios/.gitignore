@@ -1,0 +1,4 @@
+# XcodeGen output and local builds (see README).
+CuaBots.xcodeproj/
+App/Info.plist
+build/

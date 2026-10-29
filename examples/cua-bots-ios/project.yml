@@ -1,9 +1,10 @@
 # XcodeGen spec for the iPhone app (the SwiftPM package holds everything
 # but the app target). Needs Xcode 16+ and the cua SDK XCFramework with iOS
 # slices:
-#   (cd ../../libs/cua/swift && scripts/build-xcframework.sh --ios)
-#   CUA_SWIFT_XCFRAMEWORK=build/CuaSDKFFI.xcframework xcodegen generate
-#   xcodebuild -scheme CuaBots -destination 'platform=iOS Simulator,name=iPhone 16' build
+#   (cd ../../libs/cua/swift && scripts/build-xcframework.sh --ios --package cua-spaces-ffi)
+#   xcodegen generate
+#   CUA_SWIFT_XCFRAMEWORK=build/CuaSDKFFI.xcframework xcodebuild -scheme CuaBotsApp \
+#     -destination 'platform=iOS Simulator,name=iPhone 17' build
 name: CuaBots
 options:
   bundleIdPrefix: ai.cua.samples
@@ -14,11 +15,30 @@ packages:
     path: .
   Cua:
     path: ../../libs/cua/swift
+# Its own scheme name: `CuaBots` is also the Mac app's SwiftPM executable,
+# and `-scheme CuaBots` picks that one.
+schemes:
+  CuaBotsApp:
+    build:
+      targets:
+        CuaBots: all
+    run:
+      config: Debug
+    archive:
+      config: Release
 targets:
   CuaBots:
     type: application
     platform: iOS
     sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: studio.aoj.cuabots
+        MARKETING_VERSION: 0.1.0
+        # Archives pass CURRENT_PROJECT_VERSION (ossie/ship-testflight.sh).
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
     dependencies:
       - package: CuaBotsiOS
         product: CuaBotsPhone
@@ -30,7 +50,21 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: Cua Bots
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
+        # App Store validation refuses a bundle with no orientations (90474),
+        # and an iPad build needs all four for multitasking.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         CFBundleURLTypes:
           - CFBundleURLSchemes: [cuabots]
         NSLocalNetworkUsageDescription: Reach a bot's computer on your network.

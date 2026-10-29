@@ -2,10 +2,15 @@
 # Build CuaSDKFFI.xcframework (static libcua_sdk.a + UniFFI header and
 # modulemap) for the Swift package's `.binaryTarget`.
 #
-# Usage: scripts/build-xcframework.sh [--ios] [--out DIR] [--zip]
+# Usage: scripts/build-xcframework.sh [--ios] [--package CRATE] [--out DIR] [--zip]
 #   macOS slice: aarch64-apple-darwin plus x86_64-apple-darwin when that
 #                rust target is installed (lipo'd into one universal .a).
 #   --ios:       also aarch64-apple-ios and an iOS simulator slice.
+#   --package:   the Rust package whose static library goes in (default
+#                cua-sdk). An app that also links the Cua Spaces app export
+#                (`libs/spaces-app-swift`) passes cua-spaces-ffi, which carries
+#                the cua SDK too, as its scripts/stage-library.sh does for the
+#                dev dylib. The library is still named libcua_sdk.a.
 #   --zip:       zip it and print the SwiftPM checksum (release upload).
 # Uses `xcodebuild -create-xcframework` when Xcode is present and writes the
 # (documented, stable) XCFramework layout by hand otherwise.
@@ -17,10 +22,12 @@ cua_root="$(cd "$swift_root/.." && pwd)"
 out="$swift_root/build"
 ios=0
 zip=0
+package=cua-sdk
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ios) ios=1 ;;
     --zip) zip=1 ;;
+    --package) package="$2"; shift ;;
     --out) out="$2"; shift ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
@@ -28,10 +35,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 target_dir="${CARGO_TARGET_DIR:-$cua_root/target}"
+# The Swift package's iOS floor. Without it the cc crate compiles C (aws-lc)
+# for the SDK's own version while rustc links for iOS 10, and the dylib link
+# fails on ___chkstk_darwin.
+export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 installed="$(rustup target list --installed 2>/dev/null || true)"
 build() {
-  (cd "$cua_root" && cargo build --locked --release -p cua-sdk --target "$1")
+  (cd "$cua_root" && cargo build --locked --release -p "$package" --target "$1")
 }
+lib="lib${package//-/_}.a"
 
 mac_targets=(aarch64-apple-darwin)
 grep -qx x86_64-apple-darwin <<<"$installed" && mac_targets+=(x86_64-apple-darwin)
@@ -50,7 +62,7 @@ module cua_sdkFFI {
 MAP
 
 libs=()
-for t in "${mac_targets[@]}"; do libs+=("$target_dir/$t/release/libcua_sdk.a"); done
+for t in "${mac_targets[@]}"; do libs+=("$target_dir/$t/release/$lib"); done
 mkdir -p "$work/macos"
 lipo -create "${libs[@]}" -output "$work/macos/libcua_sdk.a"
 mac_archs="$(lipo -archs "$work/macos/libcua_sdk.a" | tr ' ' '_')"
@@ -60,8 +72,8 @@ if [[ $ios == 1 ]]; then
   build aarch64-apple-ios
   build aarch64-apple-ios-sim
   mkdir -p "$work/ios" "$work/ios-sim"
-  cp "$target_dir/aarch64-apple-ios/release/libcua_sdk.a" "$work/ios/"
-  cp "$target_dir/aarch64-apple-ios-sim/release/libcua_sdk.a" "$work/ios-sim/"
+  cp "$target_dir/aarch64-apple-ios/release/$lib" "$work/ios/libcua_sdk.a"
+  cp "$target_dir/aarch64-apple-ios-sim/release/$lib" "$work/ios-sim/libcua_sdk.a"
   slices+=("ios|$work/ios/libcua_sdk.a|ios|arm64|")
   slices+=("ios-sim|$work/ios-sim/libcua_sdk.a|ios|arm64|simulator")
 fi

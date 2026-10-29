@@ -51,6 +51,9 @@ from typing import Iterable
 
 COPYRIGHT_HOLDER = "Cua AI, Inc."
 COPYRIGHT_YEAR = "2026"
+# Holders whose notice marks first-party code, so a file naming one still
+# needs the SPDX header. Ossie Irondi holds the fork's ossie/ tooling.
+FIRST_PARTY_HOLDERS = (COPYRIGHT_HOLDER, "Ossie Irondi")
 FSL = "FSL-1.1-MIT"
 MARKER = "SPDX-License-Identifier"
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -102,7 +105,7 @@ def declared_id(head: str) -> str | None:
 def foreign_notice(head: str) -> bool:
     """Another party's copyright or license notice (adapted or vendored code)."""
     for line in head.splitlines()[:40]:
-        if re.search(r"\bcopyright\b", line, re.I) and COPYRIGHT_HOLDER not in line:
+        if re.search(r"\bcopyright\b", line, re.I) and not any(h in line for h in FIRST_PARTY_HOLDERS):
             return True
         if re.search(r"licensed under", line, re.I):
             return True

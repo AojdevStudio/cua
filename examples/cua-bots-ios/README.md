@@ -32,10 +32,14 @@ Simulator) the loopback address works.
 
 ## Build
 
-The package (`CuaBotsRemote`, `CuaBotsPhone`) builds and tests on macOS:
+The package (`CuaBotsRemote`, `CuaBotsPhone`) builds and tests on macOS. It
+links the Cua Spaces app export (`CuaSpacesFFI`), so stage that library, not
+the plain cua SDK. With CMake 4, export `CMAKE_POLICY_VERSION_MINIMUM=3.5`
+first (the bundled Opus is older than CMake 4 accepts).
 
 ```sh
-(cd ../../libs/cua && cargo build --locked --release -p cua-sdk && node scripts/stage-uniffi-library.mjs --only=swift)
+(cd ../../libs/cua && cargo build --locked --release -p cua-spaces-ffi)
+../../libs/spaces-app-swift/scripts/stage-library.sh
 swift build && scripts/test.sh
 ```
 
@@ -43,9 +47,10 @@ The iPhone app target is `App/` with an XcodeGen spec (`project.yml`). It needs
 Xcode 16 and the cua SDK XCFramework with iOS slices:
 
 ```sh
-(cd ../../libs/cua/swift && scripts/build-xcframework.sh --ios)
-CUA_SWIFT_XCFRAMEWORK=build/CuaSDKFFI.xcframework xcodegen generate
-xcodebuild -scheme CuaBots -destination 'platform=iOS Simulator,name=iPhone 16' build
+(cd ../../libs/cua/swift && scripts/build-xcframework.sh --ios --package cua-spaces-ffi)
+xcodegen generate
+CUA_SWIFT_XCFRAMEWORK=build/CuaSDKFFI.xcframework xcodebuild -scheme CuaBotsApp \
+  -destination 'platform=iOS Simulator,name=iPhone 17' build
 ```
 
 Without Xcode, `CuaBotsPhonePreview` shows the same screens in a phone-sized
