@@ -70,7 +70,7 @@ async function asc<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unk
     // A gateway 502 or 503 can answer in HTML, so keep the status and path when the body is not JSON.
     let body: AscError;
     try {
-      body = text ? JSON.parse(text) : {};
+      body = (text ? JSON.parse(text) : null) ?? {};
     } catch {
       body = { errors: [{ status: String(response.status), code: "NON_JSON", title: text.slice(0, 200) }] };
     }
