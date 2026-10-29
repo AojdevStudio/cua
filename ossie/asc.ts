@@ -66,9 +66,17 @@ async function asc<T>(method: "GET" | "POST" | "PATCH", path: string, body?: unk
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
-  const json = text ? JSON.parse(text) : undefined;
-  if (!response.ok) throw new AscRequestError(response.status, json ?? {}, method, path);
-  return json as T | undefined;
+  if (!response.ok) {
+    // A gateway 502 or 503 can answer in HTML, so keep the status and path when the body is not JSON.
+    let body: AscError;
+    try {
+      body = text ? JSON.parse(text) : {};
+    } catch {
+      body = { errors: [{ status: String(response.status), code: "NON_JSON", title: text.slice(0, 200) }] };
+    }
+    throw new AscRequestError(response.status, body, method, path);
+  }
+  return text ? (JSON.parse(text) as T) : undefined;
 }
 
 async function get<T>(path: string): Promise<T> {
