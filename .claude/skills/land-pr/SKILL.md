@@ -18,10 +18,10 @@ The PR gate refuses a merge unless the PR body passes the contract and the revie
 |---|---|
 | Pass signal | The `pullfrog-approval` check-run from the Pullfrog app concludes `success` on the exact head SHA. Missing, running, failed, or stale verdicts do not pass, and neither does a second run of that name or one from another app. The kit's source repo is the owner's curated settings repo and is never gated by a review bot. |
 | Source repo merges | Name the repo in the merge command: `-R <owner>/<repo>` or the PR URL. The gate grants the exemption only then. |
-| Conflict fix | When the bot approved the previous head and the only new commit merges the base to resolve conflicts, prove the resolution and merge on that approval. The gate allows this case. |
+| Conflict fix | A conflict-resolution commit changes the head. Wait for a successful `pullfrog-approval` check-run on that exact head before merging. |
 | CI | Required checks pass on the same head. |
 | Threads | Fix actionable findings. Resolve bot threads with evidence. Resolve or disposition every other thread. |
-| Authorization | Merge only on the owner's word: an explicit "merge", or a request whose wording implies it ("ship it", "get it merged", "merge when green"). Without it, stop at merge-ready and report the head SHA, CI, bot verdict, threads, and spec fidelity. Never merge when the repo's AGENTS.md forbids agent merges. |
+| Authorization | Merge only on the owner's word: an explicit "merge", or a request whose wording implies it ("ship it", "get it merged", "merge when green"). Never pass `--admin` or `--auto`. The gate refuses both. For "merge when green", wait for required checks and exact-head approval, then use a plain merge. Without merge authorization, stop at merge-ready and report the head SHA, CI, bot verdict, threads, and spec fidelity. Never merge when the repo's AGENTS.md forbids agent merges. |
 | Other bots | Open Code Review, CodeRabbit, Greptile, and Codex are advisory unless branch rules require them. |
 
 ## Convergence rule

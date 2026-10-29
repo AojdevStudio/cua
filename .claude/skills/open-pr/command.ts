@@ -2,7 +2,7 @@
  * Finds pull-request writes inside a Bash command, so the gate can check them.
  * Pure: it never reads files or calls gh. The gate resolves file bodies and merge state.
  *
- * Covered: `gh pr create|edit|merge`, `gh api` POST/PATCH on `repos/O/R/pulls[/N]` and PUT on
+ * Covered: `gh pr create|edit|merge`, `gh issue edit` title/body/attachment edits, `gh api` POST/PATCH on `repos/O/R/pulls[/N]` and PUT on
  * `repos/O/R/pulls/N/merge`, PATCH on numbered `repos/O/R/issues/N`, and every `gh api graphql` call whose query is not a literal that provably
  * neither merges nor writes a PR. The same holds inside `ssh host '...'`, `bash -c`, and a program a shell
  * reads on stdin: its last heredoc or here-string, a pipe from cat or from echo or printf of literal words,
@@ -39,7 +39,18 @@
  * tcsh, yash, posh, and Korn shells other than plain ksh (mksh, ksh93, pdksh) take options the gate does not model,
  * so one given any option word or any stdin is opaque.
  * A word the shell computes where any shell still reads options, as in `bash "$opts" ...`, is opaque, since it can be `-c`.
- * So is a command name the shell computes, which can be a shell, when a later word or its stdin holds a PR command.
+ * After `--`, bash, sh, zsh, dash, ash, and plain ksh read no more options, so a computed word there, as in `bash -- "$d/t.sh"`,
+ * is a script operand and the gate allows it, but only when all of these hold. Before `--` come only -e, -u, -x, and -v, since a
+ * named option such as `-o shinstdin` makes the operand a positional parameter and the shell reads stdin. The word cannot split into
+ * no word, as `bash -- $x` can. No descriptor can carry text, since the operand can be /dev/stdin, /dev/fd/N, or a process
+ * substitution: the shell has no stdin redirect but `< /dev/null`, no pipe, and no stdin from the ssh or shell that runs it, and
+ * its shell has no heredoc, here-string, input redirect, or process substitution, and inherits none.
+ * When a descriptor can carry text, any script operand, with or without `--`, is opaque unless it is a literal path that cannot
+ * reach a descriptor: after `//`, `/./`, and `..` are resolved, against the directory literal cds led to for a relative path, it
+ * stays off /dev/ and /proc/, names no `~user`, and climbs no `..` above home or the starting directory, whose depth is unknown.
+ * The literal /dev/stdin, /dev/fd/0, and /proc/self/fd/0 are the exception: stdin is then the program, and the gate reads it.
+ * `< /dev/null` gives no text, so it leaves the operand a file.
+ * A command name the shell computes, which can be a shell, is opaque when a later word or its stdin holds a PR command.
  * A `-c` script or ssh command the outer shell computes is opaque when a command name in it is computed, since that can be gh.
  * Output the outer shell computes, piped into a shell, is opaque too, whatever command or group prints it.
  */
@@ -50,6 +61,9 @@ export { atSource, fileKey } from "./context";
 export type { AtFiles, BodySource, Where } from "./context";
 
 export type PrField = "title" | "draft" | "body";
+
+const FILL_FLAGS = ["fill", "fill-first", "fill-verbose"] as const;
+type FillFlag = (typeof FILL_FLAGS)[number];
 
 /** A REST field: the text gh sends, and `typed` when `-F` turns true, false, null, or an integer in that text into JSON. */
 export interface FieldValue {
@@ -77,32 +91,35 @@ interface Base {
 
 type RestWrite =
   | { kind: "input"; write: "create" | "edit"; request: BodySource }
-  | { kind: "fields"; write: "create" | "edit"; fields: Partial<Record<PrField, FieldValue>> };
+  | { kind: "fields"; write: "create" | "edit"; fields: Partial<Record<PrField, FieldValue>>; convertsIssue?: true };
 
 type IssueEditAction = (RestWrite & { write: "edit" }) | { kind: "opaque"; part: "field" };
 
 export type PrCommand =
-  | (Base & { kind: "create"; title?: BodySource; draft: boolean; body: BodySource })
+  /** `fill`: the flag that has gh build the title from commits when no `--title` is given. */
+  | (Base & { kind: "create"; title?: BodySource; fill?: FillFlag; draft: boolean; body: BodySource })
   | (Base & { kind: "edit"; title?: BodySource; body?: BodySource })
   /** A REST create or edit, decoded from --input JSON or -f/-F fields. */
   | (Base & RestWrite)
-  /** A numbered Issues edit whose resource must be classified before applying PR rules. */
+  /** A numbered Issues API or CLI edit whose resource must be classified before applying PR rules. */
   | (Base & { kind: "issue-edit"; repo: string; target: string; hosts: string[]; drift?: "repo" | "host"; edit: IssueEditAction })
   /**
    * A PR write the shell computes part of: the method or a word gh could read as flags (`control`), a field name (`field`), or the
    * stdin program it runs in (`program`), or a shell whose options the gate does not read (`shell`). Any write could hide in it.
    */
-  | (Base & { kind: "opaque"; part: "control" | "field" | "program" | "shell" })
+  | (Base & { kind: "opaque"; part: "control" | "field" | "program" | "shell" | "query" })
   /**
    * `pinned`: the command itself names the repo with `-R`, a PR URL, or a literal REST path. `hosts`: every GitHub host it names.
    * `match`: the head commit the merge requires, which gh or GitHub checks when it merges.
    * `drift`: the gate cannot know the `repo` or PR gh picks from the current directory, or the `host` and config gh uses.
    */
-  | (Base & { kind: "merge"; target?: string; pinned: boolean; drift?: "repo" | "host"; hosts: string[]; match?: HeadMatch })
+  | (Base & { kind: "merge"; target?: string; pinned: boolean; blockedMode?: "admin" | "auto"; drift?: "repo" | "host"; hosts: string[]; match?: HeadMatch })
   /** `query` is the GraphQL text, or with `json` the `--input` request whose `query` field holds it. */
   | (Base & { kind: "graphql"; query: FieldValue; json: boolean; operationName: boolean })
   /** A REST PR write whose PR number the command builds at run time, so no check can name the PR. */
-  | (Base & { kind: "unresolved"; target: string });
+  | (Base & { kind: "unresolved"; target: string })
+  /** A gh command the kit never allows: `revert` opens a PR with gh's own body, `draft` is `gh pr ready --undo`. */
+  | (Base & { kind: "refused"; reason: "revert" | "draft" });
 
 /** The head a merge names: `--match-head-commit`, a REST `sha` field, or with `json` the `--input` request whose `sha` field holds it. */
 export interface HeadMatch {
@@ -111,12 +128,13 @@ export interface HeadMatch {
 }
 
 /**
- * What a GraphQL document can do to a PR: merge it, write it (create or update), or
+ * What a GraphQL document can do to a PR: merge it (directly, by auto-merge, or through the
+ * merge queue), write it (create, update, revert, or convert to a draft), or
  * `opaque` when shell expansion in the text could turn it into either. Null means neither.
  */
 export function graphqlRisk(text: string, operationName = false): "merge" | "write" | "opaque" | null {
-  if (/\b(mergePullRequest|enablePullRequestAutoMerge)\b/.test(text)) return "merge";
-  if (/\b(createPullRequest|updatePullRequest)\b/.test(text)) return "write";
+  if (/\b(mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest)\b/.test(text)) return "merge";
+  if (/\b(createPullRequest|updatePullRequest|revertPullRequest|convertPullRequestToDraft)\b/.test(text)) return "write";
   if (/[$`]/.test(topLevel(text).replace(/\$\w+\s*:/g, ""))) return "opaque";
   // A query cannot write. With operationName set, an expansion could add a mutation as a second operation.
   if (!operationName && !/\bmutation\b/.test(text)) return null;
@@ -746,8 +764,9 @@ interface Level {
   names: string[];
 }
 
-const GH_ROOT: Level = { bools: ["--help", "--version"], names: ["pr", "api"] };
-const GH_PR: Level = { bools: ["--help"], names: ["create", "new", "edit", "merge"] };
+const GH_ROOT: Level = { bools: ["--help", "--version"], names: ["pr", "issue", "api"] };
+const GH_ISSUE: Level = { bools: ["--help"], names: ["edit"] };
+const GH_PR: Level = { bools: ["--help"], names: ["create", "new", "edit", "merge", "ready", "revert"] };
 
 /** The subcommand gh's command finder picks, and the words left for that subcommand's flag parser. */
 interface Found {
@@ -765,18 +784,29 @@ function computed(word: string, scope: Scope): boolean {
 /**
  * Picks a subcommand the way gh's command finder (cobra) does: the first word that is neither a
  * flag nor a flag's value, removed so the flags around it go to the subcommand. The finder takes
- * any flag missing from `bools` to own the next word, even one it does not know. After a word the
- * shell computes, which could be any flag, the first later name from `names` is picked.
+ * any flag missing from `bools` to own the next word, even one it does not know. A word the shell
+ * computes, like the command name before an `unknown` scan, can be any words, ending in a flag that
+ * owns the next word or not, so both readings are followed, and the first name from `names` either
+ * reaches is picked. A reading that reaches another name runs no PR write.
  */
 function subcommand(words: string[], level: Level, scope: Scope, unknown = false): Found {
-  for (let i = 0; i < words.length; i++) {
+  // The readings still open: the finder takes the next word as a name or flag, or as a flag's value.
+  let ready = true;
+  let owed = unknown;
+  for (let i = 0; i < words.length && (ready || owed); i++) {
     const word = words[i];
-    if (computed(word, scope)) unknown = true;
-    else if (unknown ? level.names.includes(word) : word !== "" && !word.startsWith("-")) {
+    if (computed(word, scope)) {
+      unknown = ready = owed = true;
+      continue;
+    }
+    const name = word !== "" && !word.startsWith("-");
+    if (ready && name && (!unknown || level.names.includes(word))) {
       return { name: word, words: [...words.slice(0, i), ...words.slice(i + 1)], unknown };
-    } else if (unknown) continue;
-    else if (word === "--") break;
-    else if (!word.includes("=") && (word.startsWith("--") || word.length === 2) && !level.bools.includes(word)) i++;
+    }
+    const takes = ready && !name && !word.includes("=") && (word.startsWith("--") || word.length === 2) && !level.bools.includes(word);
+    // A value ends its flag. A name or `--` ends the reading, and a flag that owns the next word moves it on.
+    const stays = ready && !name && word !== "--" && !takes;
+    [ready, owed] = [owed || stays, takes];
   }
   return { words, unknown };
 }
@@ -804,6 +834,8 @@ interface Ctx extends Where {
   known?: boolean;
   /** The program text this shell was given on stdin, which a command here reads when it has no redirection or pipe of its own. */
   stdin?: Input;
+  /** A descriptor this shell inherits can carry text: the program it reads on stdin, or one the shell that runs it opened. */
+  fds?: boolean;
   /** Collects the files the command being read makes gh read. */
   reads?: Read[];
 }
@@ -894,7 +926,7 @@ function catSource(sub: Sub, ctx: Ctx): BodySource | undefined {
   return source?.kind === "inline" ? { ...source, text: source.text.replace(/\n+$/, "") } : source;
 }
 
-/** The flags of `gh pr create`, `edit`, and `merge` in gh 2.101, as `--help` lists them. */
+/** The flags of `gh pr create`, `edit`, `merge`, and `ready` in gh 2.101, as `--help` lists them. */
 const PR_FLAGS = {
   create: flagTable(
     "a assignee, attach, B base, b body, F body-file, H head, l label, m milestone, p project, recover, r reviewer, T template, t title, R repo",
@@ -905,10 +937,17 @@ const PR_FLAGS = {
     "remove-milestone, help",
   ),
   merge: flagTable("A author-email, b body, F body-file, match-head-commit, t subject, R repo", "admin, auto, d delete-branch, disable-auto, m merge, r rebase, s squash, help"),
+  ready: flagTable("R repo", "undo, help"),
 };
 
 function ghPr(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
   const verb = found.name === "new" ? "create" : found.name;
+  if (verb === "revert") return { ...at(seg, ctx), kind: "refused", reason: "revert" };
+  if (verb === "ready") {
+    const args = readArgs(found.words, PR_FLAGS.ready, ctx.scope);
+    if (args.unknown || found.unknown) return { ...at(seg, ctx), kind: "opaque", part: "control" };
+    return isOn(args, "undo") ? { ...at(seg, ctx), kind: "refused", reason: "draft" } : null;
+  }
   if (verb !== "create" && verb !== "edit" && verb !== "merge") return found.unknown ? { ...at(seg, ctx), kind: "opaque", part: "control" } : null;
   const args = readArgs(found.words, PR_FLAGS[verb], ctx.scope);
   const base = { ...at(seg, ctx), repo: last(args, "repo") };
@@ -923,7 +962,8 @@ function ghPr(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
     const head = last(args, "match-head-commit");
     const match = head === undefined ? undefined : { value: { source: wordSource(head, ctx), typed: false }, json: false };
     const repo = repoHost === undefined ? base.repo : base.repo?.split("/").slice(1).join("/");
-    return { ...base, repo, kind: "merge", target, pinned, hosts, match, drift: drift(ctx.scope.env.names, !url && (base.repo === undefined || target === undefined), url, ctx) };
+    const blockedMode = isOn(args, "admin") ? "admin" : isOn(args, "auto") ? "auto" : undefined;
+    return { ...base, repo, kind: "merge", target, pinned, hosts, match, blockedMode, drift: drift(ctx.scope.env.names, !url && (base.repo === undefined || target === undefined), url, ctx) };
   }
   // gh reads --body-file over --body.
   const file = last(args, "body-file");
@@ -931,8 +971,55 @@ function ghPr(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
   const body = file !== undefined ? pathSource(file, seg, ctx) : text !== undefined ? wordSource(text, ctx) : undefined;
   const titleWord = last(args, "title");
   const title = titleWord === undefined ? undefined : wordSource(titleWord, ctx);
-  if (verb === "create") return { ...base, kind: "create", title, draft: isOn(args, "draft"), body: body ?? { kind: "missing" } };
+  if (verb === "create") {
+    const fill = FILL_FLAGS.find((name) => isOn(args, name));
+    return { ...base, kind: "create", title, fill, draft: isOn(args, "draft"), body: body ?? { kind: "missing" } };
+  }
   return body === undefined && title === undefined ? null : { ...base, kind: "edit", title, body };
+}
+
+/** The flags of `gh issue edit` in gh 2.100.0, as `--help` lists them. */
+const ISSUE_EDIT_FLAGS = flagTable(
+  "add-assignee, add-blocked-by, add-blocking, add-label, add-project, add-sub-issue, attach, b body, F body-file, m milestone, parent, remove-assignee, remove-blocked-by, remove-blocking, remove-label, remove-project, remove-sub-issue, t title, type, R repo",
+  "remove-milestone, remove-parent, remove-type, help",
+);
+
+function ghIssue(found: Found, seg: Segment, ctx: Ctx): PrCommand[] {
+  const base = at(seg, ctx);
+  const opaque = (): PrCommand[] => [{ ...base, kind: "opaque", part: "control" }];
+  if (found.name !== "edit") return found.unknown ? opaque() : [];
+  const args = readArgs(found.words, ISSUE_EDIT_FLAGS, ctx.scope);
+  if (args.unknown || found.unknown) return opaque();
+  const fields: Partial<Record<PrField, FieldValue>> = {};
+  const title = last(args, "title");
+  const file = last(args, "body-file");
+  const text = last(args, "body");
+  if (title !== undefined) fields.title = { source: wordSource(title, ctx), typed: false };
+  if (file !== undefined) fields.body = { source: pathSource(file, seg, ctx), typed: false };
+  else if (text !== undefined) fields.body = { source: wordSource(text, ctx), typed: false };
+  const attach = last(args, "attach");
+  if (fields.title === undefined && fields.body === undefined && attach === undefined) return [];
+  const targets = args.positionals.map((word) => {
+    const url = word.match(/^https?:\/\/([a-z0-9_.-]+)\/([a-z0-9_.-]+\/[a-z0-9_.-]+)\/(?:issues|pull)\/(\d+)/i);
+    if (url) return { target: url[3], repo: url[2], host: url[1].toLowerCase() };
+    return /^#?\d+$/.test(word) ? { target: word.replace(/^#/, "") } : undefined;
+  });
+  if (targets.length === 0 || targets.some((target) => target === undefined)) return opaque();
+  // gh takes every number's repository from the first URL, ahead of -R, and rejects conflicting URLs.
+  const url = targets.find((target) => target?.repo !== undefined);
+  if (url && targets.some((target) => target?.repo !== undefined &&
+    (target.repo.toLowerCase() !== url.repo?.toLowerCase() || target.host !== url.host))) return opaque();
+  const named = last(args, "repo");
+  const repoMatch = named?.match(/^(?:https?:\/\/)?(?:([a-z0-9_.-]+)\/)?([a-z0-9_.-]+\/[a-z0-9_.-]+)\/?$/i);
+  if (!url && named !== undefined && !repoMatch) return opaque();
+  const repo = url?.repo ?? repoMatch?.[2] ?? "{owner}/{repo}";
+  const host = url?.host ?? repoMatch?.[1];
+  // A bare number leaves gh's repository and host selection unknown to the API classifier.
+  const context = drift(ctx.scope.env.names, false, false, ctx) ?? (!url && !repoMatch ? "repo" : undefined);
+  return targets.flatMap((target): PrCommand[] => target === undefined ? [] : [{
+    ...base, kind: "issue-edit", repo, target: target.target, hosts: host === undefined ? [] : [host],
+    drift: context, edit: attach === undefined ? { kind: "fields", write: "edit", fields } : { kind: "opaque", part: "field" },
+  }]);
 }
 
 /**
@@ -1011,6 +1098,8 @@ function ghApi(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
   }
   const write = !number && method === "POST" ? "create" : number && method === "PATCH" ? "edit" : null;
   if (write === null) return null;
+  // gh sends a `?` in the path, and every field flag beside --input, as a query string this gate does not read.
+  if (write === "create" && (raw?.replace(MARKER, "").includes("?") || (input !== undefined && args.flags.some(isField)))) return { ...base, kind: "opaque", part: "query" };
   const issueEdit = (edit: IssueEditAction): PrCommand => ({
     ...base, kind: "issue-edit", repo, target: number, hosts,
     drift: drift(ctx.scope.env.names, !pinned, false, ctx), edit,
@@ -1029,7 +1118,8 @@ function ghApi(found: Found, seg: Segment, ctx: Ctx): PrCommand | null {
     const field = fields.get(key);
     if (field) set[key] = fieldValue(field, seg, ctx);
   }
-  return issue ? issueEdit({ kind: "fields", write: "edit", fields: set }) : { ...base, kind: "fields", write, fields: set };
+  if (issue) return issueEdit({ kind: "fields", write: "edit", fields: set });
+  return { ...base, kind: "fields", write, fields: set, ...([...fields.keys()].some((key) => key.replace(/\[.*$/, "") === "issue") && { convertsIssue: true as const }) };
 }
 
 const ISSUES = /^repos\/([^/]+\/[^/]+)\/issues\/([^/]+)$/i;
@@ -1088,16 +1178,21 @@ function handOver(words: string[], outer: Scope): Scope {
 }
 
 /**
- * The PR command a gh call makes. A word the shell computes where gh reads the command name could
- * be `pr` or `api`, and one where gh reads the pr subcommand could be any write, so both are opaque.
+ * The PR commands a gh call makes. A word the shell computes where gh reads a command name could
+ * choose a PR write, so it is opaque. An issue edit can name several targets in the same repository.
  */
-function ghCommand(seg: Segment, ctx: Ctx, unknown: boolean): PrCommand | null {
+function ghCommand(seg: Segment, ctx: Ctx, unknown: boolean): PrCommand[] {
   const top = subcommand(seg.words.slice(1), GH_ROOT, ctx.scope, unknown);
+  if (top.name === "issue") return ghIssue(subcommand(top.words, GH_ISSUE, ctx.scope, top.unknown), seg, ctx);
   if (top.name === "pr" || (top.name === undefined && top.unknown)) {
     const pr = subcommand(top.words, GH_PR, ctx.scope, top.unknown);
-    if (pr.name !== undefined || (top.name === "pr" && pr.unknown)) return ghPr(pr, seg, ctx);
+    if (pr.name !== undefined || (top.name === "pr" && pr.unknown)) {
+      const command = ghPr(pr, seg, ctx);
+      return command ? [command] : [];
+    }
   }
-  return top.name === "api" || (top.name === undefined && top.unknown) ? ghApi(top, seg, ctx) : null;
+  const command = top.name === "api" || (top.name === undefined && top.unknown) ? ghApi(top, seg, ctx) : null;
+  return command ? [command] : [];
 }
 
 /** The text a segment's substitutions sit in: its words, its redirect targets, and its unquoted heredocs, on any descriptor, since all of them expand before the command runs. */
@@ -1325,6 +1420,28 @@ const isGh = (t: string): boolean => t === "gh" || t.endsWith("/gh");
 /** A script operand that names the shell's own stdin, so stdin is the program. */
 const STDIN = /^\/dev\/(?:stdin|fd\/0)$|^\/proc\/self\/fd\/0$/;
 
+/**
+ * Whether a script operand is a literal path that cannot name a descriptor: once `//`, `/./`, and `..` are resolved, it stays off
+ * /dev/ and /proc/, in any letter case and under /private/. Home and the directory a relative path starts in have no known depth, so a `..` above either can reach /.
+ * `~user` can be any directory, as `~sys` is /dev on Debian.
+ */
+function fileOperand(word: string, ctx: Ctx): boolean {
+  const literal = localPath(word);
+  if (literal === undefined || (ctx.lost && !/^[/~]/.test(literal))) return false;
+  const dir = ctx.dir ?? ".";
+  const path = /^[/~]/.test(literal) ? literal : /^[/~]/.test(dir) ? `${dir}/${literal}` : `./${dir}/${literal}`;
+  const [root, ...parts] = path.split("/");
+  const kept: string[] = [];
+  for (const part of parts) {
+    if (part.startsWith("~") || (part === ".." && kept.pop() === undefined && root !== "")) return false;
+    if (part !== "" && part !== "." && part !== "..") kept.push(part);
+  }
+  // macOS volumes are case-insensitive by default, so /DEV is /dev. /private holds the real paths behind macOS's root links.
+  const [first, second] = kept.map((part) => part.toLowerCase());
+  const top = first === "private" ? second : first;
+  return root !== "" || !["dev", "proc"].includes(top ?? "");
+}
+
 /** Commands that read their arguments as text and never run one, so a shell name among them is data. */
 const DATA = ["grep", "egrep", "fgrep", "echo", "printf", "which", "type", "ps", "pgrep"];
 
@@ -1337,12 +1454,13 @@ const FOREIGN = /^(?:.*\/)?(?:[a-z]+ksh\d*|ksh\d+|yash|posh|fish|csh|tcsh)$/;
 /**
  * A shell's own options after the shell word at `at`: where its operands start, and whether it runs a `-c` script
  * or reads its program on stdin with `-s`. As in bash, each `o` or `O` in a cluster takes the next word, and `--` or a lone `-` ends the options.
+ * `ended`: a `--` ended them, so the next word is an operand even when it starts with `-`.
  */
-function shellOptions(words: string[], at: number): { operand: number; script: boolean; stdin: boolean } {
-  const found = { operand: at + 1, script: false, stdin: false };
+function shellOptions(words: string[], at: number): { operand: number; script: boolean; stdin: boolean; ended: boolean } {
+  const found = { operand: at + 1, script: false, stdin: false, ended: false };
   for (; found.operand < words.length && /^(?:-|[-+].+)$/.test(words[found.operand]); found.operand++) {
     const word = words[found.operand];
-    if (word === "--" || word === "-") return { ...found, operand: found.operand + 1 };
+    if (word === "--" || word === "-") return { ...found, operand: found.operand + 1, ended: word === "--" };
     if (word === "--rcfile" || word === "--init-file") found.operand++;
     else if (/^[-+][A-Za-z]+$/.test(word)) {
       found.operand += word.match(/[oO]/g)?.length ?? 0;
@@ -1407,6 +1525,12 @@ const runsShell = (scope: Scope): boolean =>
     .flat()
     .some((s) => runsWord(s, scope, (w) => SHELL.test(w) || /^(?:.*\/)?ssh$/.test(w)) || !head(s.words, (w) => computed(w, scope)).sure);
 
+/** Whether a descriptor in this shell can carry text: a heredoc, a here-string, an input redirect other than /dev/null, or a process substitution. */
+const descriptors = (scope: Scope): boolean =>
+  scope.docs.length > 0 ||
+  scope.subs.some((s) => s.output === "path") ||
+  [scope.segments, ...scope.subs.map((s) => s.segments)].flat().some((s) => [...s.stdin, ...s.other].some((r) => r.kind !== "file" || r.path !== "/dev/null"));
+
 /** What a command reads on stdin as program text: its last redirection, else the pipeline part before it, else the stdin its shell was given. */
 function stdinOf(seg: Segment, ctx: Ctx): Input | undefined {
   if (given(seg).length > 0) return stdinText(seg, ctx);
@@ -1460,7 +1584,7 @@ function program(input: Input, seg: Segment, ctx: Ctx, into: Omit<Ctx, "scope">)
   const opaque: PrCommand[] = [{ ...at(seg, ctx), kind: "opaque", part: "program" }];
   if (input === "opaque") return opaque;
   const scope = handOver([input.text], ctx.scope);
-  const inner = scan(scope.segments, { ...into, scope, stdin: undefined });
+  const inner = scan(scope.segments, { ...into, scope, stdin: undefined, fds: true });
   // The outer shell expands this text before the program runs, so a write it shows is not the one gh receives, and a command name it computes can be gh.
   return input.expands && (inner.length > 0 || hidden(scope)) ? opaque : inner;
 }
@@ -1524,11 +1648,17 @@ function command(seg: Segment, found: Head, ctx: Ctx): PrCommand[] {
   const listed = first !== found.at && dataCommand(words, found);
   if (first >= 0 && !listed) {
     const foreign = FOREIGN.test(words[first]) && (/^[-+]/.test(words[first + 1] ?? "") || stdinOf(seg, ctx) !== undefined);
-    const { operand, script } = shellOptions(words, first);
+    const { operand, script, stdin, ended } = shellOptions(words, first);
     // A word the shell computes where the shell still reads options can be one, such as -c, unless it starts with literal text.
     const option = words[operand] ?? "";
+    // An operand can name a descriptor, as /dev/stdin, /dev/fd/3, or "$p" can, so it is only a file when no descriptor carries text.
+    const fed = ctx.fds || stdinOf(seg, ctx) !== undefined || descriptors(ctx.scope);
+    const plain = words.slice(first + 1, operand - 1).every((w) => /^-[euxv]+$/.test(w));
+    const operandOnly = ended && plain && !fed && !splits(option, ctx.scope);
+    // A literal /dev/stdin, /dev/fd/0, or /proc/self/fd/0 makes stdin the program, which stdinShell reads.
+    const descriptor = fed && !stdin && words[operand] !== undefined && !STDIN.test(option) && !fileOperand(option, ctx);
     const cluster = words.slice(first + 1, operand).some((w) => computed(w, ctx.scope));
-    if (foreign || cluster || (!script && computed(option, ctx.scope) && (option.startsWith("\0") || splits(option, ctx.scope)))) {
+    if (foreign || cluster || (!script && (descriptor || (!operandOnly && computed(option, ctx.scope) && (option.startsWith("\0") || splits(option, ctx.scope)))))) {
       return [{ ...at(seg, ctx), kind: "opaque", part: "shell" }];
     }
   }
@@ -1539,7 +1669,7 @@ function command(seg: Segment, found: Head, ctx: Ctx): PrCommand[] {
   if (shell) {
     const scope = handOver([shell.script], ctx.scope);
     if (shell.script.includes("\0") && hidden(scope)) return [{ ...at(seg, ctx), kind: "opaque", part: "program" }];
-    return scan(scope.segments, { ...ctx, scope, lost, wrapped: ctx.wrapped || shell.at !== 0, stdin: stdinOf(seg, ctx) });
+    return scan(scope.segments, { ...ctx, scope, lost, wrapped: ctx.wrapped || shell.at !== 0, stdin: stdinOf(seg, ctx), fds: ctx.fds || descriptors(ctx.scope) });
   }
   const name = found.at < 0 ? undefined : words[found.at];
   const reader = stdinShell(words, from, to);
@@ -1550,12 +1680,10 @@ function command(seg: Segment, found: Head, ctx: Ctx): PrCommand[] {
     return program(input, seg, ctx, { ...ctx, lost, wrapped: ctx.wrapped || found.at !== 0 });
   }
   if (name !== undefined && found.sure && isGh(name)) {
-    const cmd = ghCommand({ ...seg, words: words.slice(found.at) }, { ...ctx, lost, known: !ctx.wrapped && found.at === 0 }, false);
-    return cmd ? [cmd] : [];
+    return ghCommand({ ...seg, words: words.slice(found.at) }, { ...ctx, lost, known: !ctx.wrapped && found.at === 0 }, false);
   }
   if (!found.sure && found.at >= 0 && hidesShell(seg, found.at, ctx)) return [{ ...at(seg, ctx), kind: "opaque", part: "shell" }];
   const start = gh >= 0 ? gh : found.sure ? -1 : found.at;
   if (start < 0) return [];
-  const cmd = ghCommand({ ...seg, words: words.slice(start) }, { ...ctx, lost, known: false }, true);
-  return cmd ? [cmd] : [];
+  return ghCommand({ ...seg, words: words.slice(start) }, { ...ctx, lost, known: false }, true);
 }

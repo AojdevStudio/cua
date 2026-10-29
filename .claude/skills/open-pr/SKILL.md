@@ -10,6 +10,8 @@ metadata:
 
 # open-pr
 
+Use Claude Code 2.1.295 or newer. Earlier versions do not enforce `onFailure: "block"`, so a hook crash or timeout can allow a command to run.
+
 The PR body is a briefing for a reviewer who has one minute. A gate checks the body on create, edit, and merge, and the `pr-kit` CI check checks it again. A body that breaks the contract does not open.
 
 ## Steps
@@ -75,13 +77,15 @@ The runner label comes from `--runs-on <label>`, else the label in the installed
 
 For a product that ships `.claude/skills`, install with `--layout developer`. The unchanged skill folders go under `.dev/pr-kit`. The installer creates no Claude or Codex discovery links there. Repository instructions point at each `SKILL.md` explicitly. The repository hook and CI checker use that directory. Run an installed developer copy with `bun .dev/pr-kit/open-pr/kit.ts install <repo>`. A bare rerun keeps the recorded layout. The installer refuses conflicting layouts or an implicit move between them.
 
+The installer writes into real files only and refuses any symlink in its path, with one exception. One root instruction file may be a symlink whose text is exactly the other's name, `AGENTS.md` to `CLAUDE.md` or `CLAUDE.md` to `AGENTS.md`, when the other file is real. The rule block then goes into the real file alone, and the link is left as it is.
+
 Keep product instances separate from repository settings. A developer layout still adds a repository hook to `.claude/settings.json`. Instances need their own product settings and must not inherit that file. Bun is required for every repository Bash tool call because the PR gate runs before it.
 
 Every copy of the kit carries a `VERSION` file, and each installed skill's `.pr-kit` marker records the version it installed. An install refuses before writing anything when it runs from a copy behind `kits/pr` in the kit's source repo: the target repo already has a newer version or the same version with other files, the source repo's main has a different `VERSION`, newer, older, or the same one with other files, or the copy's files do not match its own `VERSION`. There is no override. Update the copy with `sk push` or a pull of the kit's source repo, then rerun. After a kit change, run `bun kit.ts stamp` in `kits/pr/open-pr` and commit `VERSION` with the change. `bun test` fails until you do. `stamp` refuses in any other copy, so an installed or synced copy is updated, never restamped.
 
 Stored SHA-256 fingerprints use `sha256:` followed by all 32 bytes as colon-separated hex. The digest calculation is unchanged. Strict parsing accepts older contiguous hex stamps for updates and compares the complete digest.
 
-The gate hook uses `onFailure: "block"`, so a gate that times out or cannot start refuses the command instead of letting it run.
+On Claude Code 2.1.295 or newer, the gate hook uses `onFailure: "block"`, so a gate that times out or cannot start refuses the command instead of letting it run.
 
 ## Template
 

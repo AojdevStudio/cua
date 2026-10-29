@@ -26,7 +26,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { checkPullRequest, formatViolations, titleViolation, type PullRequest } from "./contract";
 import { atSource, findPrCommands, graphqlRisk, type BodySource, type FieldValue, type HeadMatch, type PrCommand } from "./command";
-import { botExempt, decideMerge, PASS_SIGNAL, verdictOf, type CheckRun } from "../land-pr/merge";
+import { botExempt, decideMerge, PASS_SIGNAL, type CheckRun } from "../land-pr/merge";
 
 interface HookInput {
   tool: string;
@@ -89,7 +89,8 @@ const DRIFT = {
 };
 const NO_BODY = "the command sets no body. Write the body with the open-pr skill and pass it with --body-file.";
 const EXPANDED = "the command holds `$`, a backquote, `~`, or an escape that a shell expands after this gate reads it, so the gate cannot see what gh gets. Write the text as gh should get it: quote a heredoc delimiter (<<'EOF'), and put an ssh or bash -c command in single quotes.";
-const OPAQUE: Record<"control" | "field" | "program" | "shell", string> = {
+const OPAQUE: Record<"control" | "field" | "program" | "shell" | "query", string> = {
+  query: "this REST create sends a query string, from a `?` in the path or field flags beside --input, and GitHub may read PR fields there that this gate cannot check. Put every field in the --input JSON or in -f/-F flags, not both, and keep `?` out of the path.",
   field: "a -f or -F field name comes from the shell, so this gate cannot tell which PR fields the request sets. Write each field name as text.",
   control: "the shell computes the method or a flag of this PR write, or can split an unquoted `$...` into more flags, so this gate cannot tell whether it writes a PR or what it sends. Write the method and every flag as text, and double-quote each `$...`.",
   program: "a shell reads its program from an unquoted heredoc, a here-string, a -c script, an ssh command, or echo or printf output that the outer shell expands first, a descriptor copy such as <&3, or a file through < or <>, which can be a path to a heredoc, a pipe, or a descriptor, so this gate cannot see the PR write it runs. Quote the heredoc delimiter (<<'EOF') and give it to the shell directly, or run the PR command on its own.",
@@ -130,6 +131,8 @@ interface PrFields {
   title?: string;
   draft?: boolean;
   body?: string;
+  /** A REST create that sets `issue` turns that issue into the PR, with the issue's title and body. */
+  convertsIssue?: boolean;
 }
 
 /** The fields an `--input` JSON request sets. */
@@ -161,7 +164,7 @@ function fieldJson({ source, typed, at }: FieldValue, cmd: PrCommand, cwd: strin
 function readFields(cmd: Extract<PrCommand, { kind: "fields" }>, cwd: string): PrFields {
   const json: Json = {};
   for (const [key, value] of Object.entries(cmd.fields)) json[key] = fieldJson(value, cmd, cwd);
-  return typedFields(json);
+  return { ...typedFields(json), convertsIssue: cmd.convertsIssue === true };
 }
 
 /** The JSON gh 2.101 sends for a `-F` value: an integer, true, false, or null, and any other text as a string. */
@@ -174,7 +177,7 @@ function ghTyped(text: string): unknown {
 /** The PR fields a REST request sets. A null body is an empty one. Any other wrong type is refused. */
 function typedFields(json: Json): PrFields {
   const body = optional(json, "body", isStrOrNull);
-  return { title: optional(json, "title", isStr), draft: optional(json, "draft", isBool), body: body === null ? "" : body };
+  return { title: optional(json, "title", isStr), draft: optional(json, "draft", isBool), body: body === null ? "" : body, convertsIssue: Object.hasOwn(json, "issue") };
 }
 
 /** The keys of a valid JSON object's outermost level, in order, repeats kept. JSON.parse keeps only the last. */
@@ -205,9 +208,11 @@ function contract(pr: PullRequest): void {
   if (!verdict.ok) throw new Refusal(`the PR body breaks the contract:\n${formatViolations(verdict.violations)}`);
 }
 
-function checkFields(write: "create" | "edit", fields: PrFields): void {
+function checkFields(write: "create" | "edit", fields: PrFields, fill?: Extract<PrCommand, { kind: "create" }>["fill"]): void {
   if (write === "create") {
+    if (fields.convertsIssue) throw new Refusal("the request converts issue into a PR, and GitHub then takes the title and body from the issue, so this gate cannot check them. Drop `issue`, and pass the title and body the open-pr skill writes.");
     if (fields.body === undefined) throw new Refusal(NO_BODY);
+    if (fill && fields.title === undefined) throw new Refusal(`--${fill} has gh build the title from commits, so this gate cannot check it. Write the title with the open-pr skill and pass --title "<title>".`);
     return contract({ title: fields.title, draft: fields.draft, body: fields.body });
   }
   if (fields.body !== undefined) return contract({ title: fields.title, body: fields.body });
@@ -221,7 +226,6 @@ interface RestPull {
   body: string | null;
   draft: boolean;
   headSha: string;
-  baseSha: string;
   baseRepo: string;
 }
 
@@ -232,7 +236,6 @@ function parsePull(x: unknown): RestPull {
     body: field(x, "body", isStrOrNull, "a PR"),
     draft: field(x, "draft", isBool, "a PR"),
     headSha: field(field(x, "head", isObj, "a PR"), "sha", isStr, "a PR head"),
-    baseSha: field(field(x, "base", isObj, "a PR"), "sha", isStr, "a PR base"),
     baseRepo: field(field(field(x, "base", isObj, "a PR"), "repo", isObj, "a PR base"), "full_name", isStr, "a PR base repo"),
   };
 }
@@ -294,7 +297,7 @@ function checkGraphql(cmd: Extract<PrCommand, { kind: "graphql" }>, cwd: string)
   // A JSON request can carry its own operationName, and an unquoted heredoc expands `$`.
   const risk = text === null ? "opaque" : graphqlRisk(text, cmd.operationName || cmd.json);
   if (risk === "merge") throw new Refusal("a GraphQL merge skips the policy check. Merge with `gh pr merge <n>` or the REST merge endpoint.");
-  if (risk === "write") throw new Refusal("a GraphQL createPullRequest or updatePullRequest skips the body contract. Use `gh pr create` or `gh pr edit`, or the REST pulls endpoint (`gh api repos/{owner}/{repo}/pulls`).");
+  if (risk === "write") throw new Refusal("a GraphQL PR create, update, revert, or draft conversion skips the body contract and the draft rule. Use `gh pr create` or `gh pr edit`, or the REST pulls endpoint (`gh api repos/{owner}/{repo}/pulls`).");
   if (risk === "opaque") throw new Refusal(UNREADABLE);
 }
 
@@ -327,15 +330,8 @@ function checkMerge(cmd: Extract<PrCommand, { kind: "merge" }>, cwd: string): vo
     throw new Refusal(`the merge names head ${named}, but the gate checked ${sha}, so it cannot vouch for the head gh would merge. Name the head the gate checked, or drop the head check.`);
   }
   if (botExempt(pull.baseRepo) && cmd.pinned) return;
-  const commit = ghJson(`repos/${repo}/commits/${sha}`, cwd);
-  const parents = field(commit, "parents", isArr, "a commit").map((p) => field(p, "sha", isStr, "a commit parent"));
   const runs = latestRuns(repo, sha, cwd);
-  // Only a merge commit whose own verdict is missing or running can inherit, so only it needs the parent's.
-  const mergeCommit = parents.length === 2 && verdictOf(runs).state === "open";
-  const parentRuns = mergeCommit ? latestRuns(repo, parents[0], cwd) : undefined;
-  const compare = mergeCommit ? ghJson(`repos/${repo}/compare/${parents[1]}...${pull.baseSha}`, cwd) : undefined;
-  const mergesBase = compare === undefined ? undefined : ["identical", "ahead"].includes(field(compare, "status", isStr, "a compare"));
-  const verdict = decideMerge({ repo: pull.baseRepo, pinned: cmd.pinned, sha, parents, runs, parentRuns, mergesBase });
+  const verdict = decideMerge({ repo: pull.baseRepo, pinned: cmd.pinned, sha, runs });
   if (!verdict.ok) throw new Refusal(`${repo}#${pull.number} cannot merge: ${verdict.reason} Follow the land-pr skill.`);
 }
 
@@ -365,6 +361,8 @@ function classifyIssue(cmd: Extract<PrCommand, { kind: "issue-edit" }>, cwd: str
 }
 
 function check(cmd: PrCommand, hookCwd: string): void {
+  if (cmd.kind === "merge" && cmd.blockedMode === "admin") throw new Refusal("gh pr merge --admin bypasses branch protection and is not allowed by the PR kit.");
+  if (cmd.kind === "merge" && cmd.blockedMode === "auto") throw new Refusal("gh pr merge --auto enables a later merge outside the approval gate and is not allowed by the PR kit.");
   if (cmd.kind === "merge" && cmd.drift) throw new Refusal(DRIFT[cmd.drift]);
   if (cmd.crowded) throw new Refusal(ALONE);
   const cwd = cmd.host || cmd.lost ? hookCwd : expand(cmd.dir ?? ".", hookCwd);
@@ -375,9 +373,14 @@ function check(cmd: PrCommand, hookCwd: string): void {
   if (cmd.kind === "merge") return checkMerge(cmd, cwd);
   if (cmd.kind === "graphql") return checkGraphql(cmd, cwd);
   if (cmd.kind === "opaque") throw new Refusal(OPAQUE[cmd.part]);
+  if (cmd.kind === "refused") {
+    throw new Refusal(cmd.reason === "revert"
+      ? "gh pr revert opens a PR with a body gh writes, which skips the body contract. Revert on a branch and open the PR with `gh pr create`."
+      : "gh pr ready --undo turns the PR back into a draft, and the PR kit forbids drafts because drafts get no review-bot coverage.");
+  }
   if (cmd.kind === "unresolved") throw new Refusal(`the PR or issue number \`${cmd.target}\` is not a literal number, so this gate cannot tell which PR this writes. Put the number in the path, for example \`repos/${cmd.repo}/pulls/38\`.`);
   const title = cmd.kind === "create" || cmd.kind === "edit" ? cmd.title && readBody(cmd.title, cmd, cwd) : undefined;
-  if (cmd.kind === "create") return checkFields("create", { title, draft: cmd.draft, body: readBody(cmd.body, cmd, cwd) });
+  if (cmd.kind === "create") return checkFields("create", { title, draft: cmd.draft, body: readBody(cmd.body, cmd, cwd) }, cmd.fill);
   if (cmd.kind === "input") return checkFields(cmd.write, readRequest(cmd, cwd));
   if (cmd.kind === "fields") return checkFields(cmd.write, readFields(cmd, cwd));
   return checkFields("edit", { title, body: cmd.body === undefined ? undefined : readBody(cmd.body, cmd, cwd) });
