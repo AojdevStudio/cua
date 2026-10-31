@@ -11,6 +11,13 @@ public enum EngineUpdate: Equatable, Sendable {
     case tool(turn: UInt32, title: String)
     case turnEnded(turn: UInt32)
     case failed(String)
+
+    public var turn: UInt32? {
+        switch self {
+        case .assistant(let turn, _), .tool(let turn, _), .turnEnded(let turn): turn
+        case .failed: nil
+        }
+    }
 }
 
 /// Where a bot is in its life, as the engine reports it.
@@ -38,6 +45,10 @@ public protocol BotEngine: AnyObject {
 
     /// Send a message to the running agent (starting a new turn).
     func send(_ bot: Bot, text: String) async throws
+
+    /// Turn the bot's computer on if it stopped (a reboot stops local
+    /// Spaces), and report whether its agent run survived.
+    func wake(_ bot: Bot) async throws -> Bool
 
     /// Updates since `cursor`, and the new cursor.
     func poll(_ bot: Bot, cursor: UInt64) async throws -> (updates: [EngineUpdate], cursor: UInt64)

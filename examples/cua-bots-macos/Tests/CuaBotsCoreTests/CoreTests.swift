@@ -158,11 +158,14 @@ final class ScriptedEngine: BotEngine {
     var replies: [String] = []
     var paused = false
     var resetCount = 0
+    var provisions = 0
+    var runSurvives = true
     private var queue: [EngineUpdate] = []
     private var turn: UInt32 = 0
     private var seq: UInt64 = 0
 
     func provision(_ bot: Bot, progress: @escaping @MainActor (EnginePhase) -> Void) async throws -> String {
+        provisions += 1
         progress(.creatingSpace("Creating"))
         progress(.ready)
         return "local:\(bot.spaceName)"
@@ -182,6 +185,8 @@ final class ScriptedEngine: BotEngine {
         queue.append(.turnEnded(turn: turn))
     }
 
+    func wake(_ bot: Bot) async throws -> Bool { runSurvives }
+
     func poll(_ bot: Bot, cursor: UInt64) async throws -> (updates: [EngineUpdate], cursor: UInt64) {
         let out = queue
         queue = []
@@ -197,12 +202,42 @@ final class ScriptedEngine: BotEngine {
     func reset(_ bot: Bot) async throws { resetCount += 1 }
 }
 
+/// The daemon keeps a run's events: a poll reads from its cursor on, as
+/// `agent_events` does.
+@MainActor
+final class ReplayingEngine: BotEngine {
+    var events: [EngineUpdate] = []
+    var opening: [EngineUpdate] = [.assistant(turn: 1, text: "Hi Sam, I'm Ada."), .turnEnded(turn: 1)]
+
+    func provision(_ bot: Bot, progress: @escaping @MainActor (EnginePhase) -> Void) async throws -> String {
+        "local:\(bot.spaceName)"
+    }
+
+    func start(_ bot: Bot, volume: VolumeStore, prompt: String) async throws -> String {
+        events += opening
+        return "run-1"
+    }
+
+    func poll(_ bot: Bot, cursor: UInt64) async throws -> (updates: [EngineUpdate], cursor: UInt64) {
+        (Array(events.dropFirst(Int(cursor))), UInt64(events.count))
+    }
+
+    func wake(_ bot: Bot) async throws -> Bool { true }
+    func send(_ bot: Bot, text: String) async throws {}
+    func checkpoint(_ bot: Bot, volume: VolumeStore) async throws {}
+    func push(_ bot: Bot, volume: VolumeStore) async throws {}
+    func interrupt(_ bot: Bot) async throws {}
+    func pause(_ bot: Bot) async throws {}
+    func resume(_ bot: Bot) async throws {}
+    func reset(_ bot: Bot) async throws {}
+}
+
 @MainActor
 @Suite(.serialized)
 struct StoreTests {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("cua-bots-tests-" + UUID().uuidString)
 
-    func makeStore(_ engine: ScriptedEngine) -> BotStore {
+    func makeStore(_ engine: any BotEngine) -> BotStore {
         BotStore(volume: LocalVolume(root: root.appendingPathComponent("volume")),
                  dataDirectory: root.appendingPathComponent("data"), engine: engine)
     }
@@ -287,6 +322,62 @@ struct StoreTests {
         #expect(again.bots.map(\.name) == ["Felipe"])
         #expect(again.bots.first?.avatar.ears == .round)
         #expect(again.bots.first?.runID == "run-1")
+    }
+
+    @Test func testRestartDoesNotRepeatAFinishedTurn() async throws {
+        let engine = ReplayingEngine()
+        let store = makeStore(engine)
+        let bot = await store.createBot(name: "Ada", avatar: .default(for: "Ada"), harness: .claudeCode,
+                                        placement: .local)
+        await store.pollOnce(bot.id)
+        let again = makeStore(engine)
+        await again.pollOnce(bot.id)
+        #expect(again.messages(for: bot.id).filter { $0.text == "Hi Sam, I'm Ada." }.count == 1)
+    }
+
+    @Test func testRestartMidTurnKeepsTheWholeReply() async throws {
+        let engine = ReplayingEngine()
+        engine.opening = [.assistant(turn: 1, text: "Hi Sam, I'm Ada.")]
+        let store = makeStore(engine)
+        let bot = await store.createBot(name: "Ada", avatar: .default(for: "Ada"), harness: .claudeCode,
+                                        placement: .local)
+        await store.pollOnce(bot.id)
+        engine.events.append(.turnEnded(turn: 1))
+        let again = makeStore(engine)
+        await again.pollOnce(bot.id)
+        #expect(again.messages(for: bot.id).contains { $0.text == "Hi Sam, I'm Ada." })
+    }
+
+    @Test func testRestartAfterABatchThatEndsMidTurnRepeatsNothing() async throws {
+        let engine = ReplayingEngine()
+        engine.opening = [.assistant(turn: 1, text: "Hi Sam, I'm Ada."), .turnEnded(turn: 1),
+                          .assistant(turn: 2, text: "Looking into it.")]
+        let store = makeStore(engine)
+        let bot = await store.createBot(name: "Ada", avatar: .default(for: "Ada"), harness: .claudeCode,
+                                        placement: .local)
+        await store.pollOnce(bot.id)
+        engine.events.append(.turnEnded(turn: 2))
+        let again = makeStore(engine)
+        await again.pollOnce(bot.id)
+        let texts = again.messages(for: bot.id).map(\.text)
+        #expect(texts.filter { $0 == "Hi Sam, I'm Ada." }.count == 1)
+        #expect(texts.contains("Looking into it."))
+    }
+
+    @Test func testARunThatDiedIsReplacedInTheSameSpace() async throws {
+        let engine = ScriptedEngine()
+        let store = makeStore(engine)
+        let bot = await store.createBot(name: "Ada", avatar: .default(for: "Ada"), harness: .claudeCode,
+                                        placement: .local)
+        await store.pollOnce(bot.id)
+        engine.runSurvives = false
+        let again = makeStore(engine)
+        await again.wake(bot.id)
+        #expect(again.bot(bot.id)?.runID == nil)
+        await again.send(bot.id, "Are you back?")
+        #expect(engine.sent.last == "Are you back?")
+        #expect(engine.provisions == 1)
+        #expect(again.bot(bot.id)?.runID == "run-1")
     }
 
     @Test func testLockedRulesSurviveEdits() async throws {

@@ -228,3 +228,8 @@ libs/cua-driver-bench/**/runs/
 libs/cua-driver-bench/**/results/
 # The bench task pack keeps its tasks in tasks/shared/ (the "shared" rule above would hide them)
 !libs/cua-driver-bench/taskpack/tasks/shared/
+
+# Self-host runtime files (ossie/selfhost-mac). PAIRING.local.md holds a spacesd token.
+ossie/PAIRING.local.md
+ossie/logs/
+ossie/snapshots/

@@ -45,7 +45,14 @@ public final class BotStore: ObservableObject {
     /// follow.
     public var onTasksChanged: ((Bot, [BotTask]) -> Void)?
 
+    /// How far each run's events have been read, by run ID.
     private var cursors: [String: UInt64] = [:]
+    /// Where each run's last finished turn ends. Saved, so a restarted app
+    /// neither repeats a turn it showed nor drops the start of one in flight.
+    private var settledCursors: [String: UInt64] = [:]
+    /// Each run's last finished turn. Saved, so events replayed from a settled
+    /// cursor that ends mid-batch don't show a finished turn twice.
+    private var settledTurns: [String: UInt32] = [:]
     private var turnText: [String: (turn: UInt32, text: String)] = [:]
     private var pollers: [String: Task<Void, Never>] = [:]
     private var currentTask: [String: String] = [:]
@@ -115,14 +122,9 @@ public final class BotStore: ObservableObject {
         guard let engine, var bot = bot(id) else { return }
         do {
             update(id) { $0.status = "Setting up"; $0.mood = .working }
-            let space = try await engine.provision(bot) { [weak self] phase in
-                guard let self else { return }
-                switch phase {
-                case .creatingSpace(let s): self.setupPhase[id] = s
-                case .startingAgent: self.setupPhase[id] = "Starting \(bot.harness.name)"
-                case .ready: self.setupPhase[id] = nil
-                }
-            }
+            // A bot that has its computer keeps it: `provision` may hand back
+            // any reachable Space.
+            let space = if let existing = bot.spaceID { existing } else { try await provision(bot, engine) }
             update(id) { $0.spaceID = space }
             bot = self.bot(id) ?? bot
             let run = try await engine.start(bot, volume: volume, prompt: firstPrompt)
@@ -137,9 +139,39 @@ public final class BotStore: ObservableObject {
         save()
     }
 
+    private func provision(_ bot: Bot, _ engine: BotEngine) async throws -> String {
+        try await engine.provision(bot) { [weak self] phase in
+            guard let self else { return }
+            switch phase {
+            case .creatingSpace(let s): self.setupPhase[bot.id] = s
+            case .startingAgent: self.setupPhase[bot.id] = "Starting \(bot.harness.name)"
+            case .ready: self.setupPhase[bot.id] = nil
+            }
+        }
+    }
+
     /// Reconnect to bots that were running when the app last quit.
     public func reconnect() {
-        for bot in bots where bot.runID != nil && !bot.isPaused { startPolling(bot.id) }
+        for bot in bots where bot.spaceID != nil && !bot.isPaused {
+            Task { await wake(bot.id) }
+        }
+    }
+
+    /// Turn the bot's computer on again and follow its run. A run that died
+    /// with the computer is dropped, so the next message starts a fresh one in
+    /// the same Space.
+    public func wake(_ id: String) async {
+        guard let engine, let bot = bot(id) else { return }
+        do {
+            if try await engine.wake(bot) {
+                startPolling(id)
+            } else if bot.runID != nil {
+                update(id) { $0.runID = nil; $0.status = "Ready"; $0.mood = .idle }
+                save()
+            }
+        } catch {
+            fail(id, "Couldn't start \(bot.computerTitle): \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Customizing
@@ -364,11 +396,22 @@ public final class BotStore: ObservableObject {
     /// Poll once; returns whether the bot is idle.
     @discardableResult
     public func pollOnce(_ id: String) async -> Bool {
-        guard let engine, let bot = bot(id), bot.runID != nil else { return true }
+        guard let engine, let bot = bot(id), let run = bot.runID else { return true }
         do {
-            let (updates, cursor) = try await engine.poll(bot, cursor: cursors[id] ?? 0)
-            cursors[id] = cursor
-            for u in updates { handle(id, u) }
+            let (updates, cursor) = try await engine.poll(bot, cursor: cursors[run] ?? 0)
+            cursors[run] = cursor
+            for u in updates {
+                if let turn = u.turn, let settled = settledTurns[run], turn <= settled { continue }
+                handle(id, u)
+                if case .turnEnded(let turn) = u { settledTurns[run] = turn }
+            }
+            switch updates.last {
+            case .turnEnded?, .failed?:
+                settledCursors[run] = cursor
+                save()
+            default:
+                break
+            }
         } catch {
             // A poll that fails once is not news; the next one retries.
         }
@@ -595,6 +638,8 @@ public final class BotStore: ObservableObject {
         var approvals: [ApprovalRequest]
         var notifications: [BotNotification]
         var bots: [Bot]
+        var cursors: [String: UInt64]?
+        var turns: [String: UInt32]?
     }
 
     var stateURL: URL { dataDirectory.appendingPathComponent("state.json") }
@@ -602,7 +647,8 @@ public final class BotStore: ObservableObject {
     public func save() {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
-        let saved = Saved(messages: messages, approvals: approvals, notifications: notifications, bots: bots)
+        let saved = Saved(messages: messages, approvals: approvals, notifications: notifications, bots: bots,
+                          cursors: settledCursors, turns: settledTurns)
         if let data = try? e.encode(saved) { try? data.write(to: stateURL, options: .atomic) }
         for bot in bots { try? volume.writeJSON(bot, VolumeLayout.identity(bot.id)) }
     }
@@ -615,6 +661,9 @@ public final class BotStore: ObservableObject {
             messages = saved.messages
             approvals = saved.approvals
             notifications = saved.notifications
+            settledCursors = saved.cursors ?? [:]
+            cursors = settledCursors
+            settledTurns = saved.turns ?? [:]
             for b in saved.bots { runtime[b.id] = b }
         }
         // The Volume is the source of truth for which bots exist.

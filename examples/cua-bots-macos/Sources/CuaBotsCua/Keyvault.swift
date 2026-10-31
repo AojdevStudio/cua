@@ -52,7 +52,7 @@ public final class KeyvaultBridge: ObservableObject, SignInBroker {
     public func items(for site: String) -> [KvItem] {
         let host = Self.host(site)
         return (overview?.items ?? []).filter { item in
-            guard let s = item.site.map(Self.host) else { return false }
+            guard let s = item.domain.map(Self.host) else { return false }
             return s == host || host.hasSuffix("." + s) || s.hasSuffix("." + host)
         }
     }
@@ -76,9 +76,9 @@ public final class KeyvaultBridge: ObservableObject, SignInBroker {
         // Touch ID; the approver below only selects what the user picked.
         // #region docs:sw-teleport
         let receipt = try await space.teleport(app: item.providerId, scope: nil,
-                                               approver: SelectItems(label: item.label))
+                                               approver: SelectItems(label: item.title))
         // #endregion docs:sw-teleport
-        return "saved sign-in \(item.account ?? item.label), \(receipt.method)"
+        return "saved sign-in \(item.title), \(receipt.method)"
     }
 
     /// Approve or deny a request an agent made itself (`teleport_app`).
@@ -101,6 +101,11 @@ public final class KeyvaultBridge: ObservableObject, SignInBroker {
 }
 
 /// Keeps every manifest item the user already chose by approving the card.
+extension KvItem {
+    /// The account or key it holds, and its app: "ossie (Chrome)".
+    public var title: String { key.isEmpty ? appDisplay : "\(key) (\(appDisplay))" }
+}
+
 final class SelectItems: TeleportApprover, @unchecked Sendable {
     let label: String
     init(label: String) { self.label = label }

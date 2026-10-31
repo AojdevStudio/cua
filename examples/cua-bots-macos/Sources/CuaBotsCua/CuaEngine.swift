@@ -91,6 +91,15 @@ public final class CuaEngine: BotEngine {
         return h
     }
 
+    public func wake(_ bot: Bot) async throws -> Bool {
+        guard let id = bot.spaceID else { throw EngineError.noSpace(bot.name) }
+        _ = try await cua.spaces().start(space: id)
+        clients[id] = nil
+        guard let run = bot.runID,
+              let status = try? await space(bot).agentStatus(runId: run, tail: nil) else { return false }
+        return status.status == "running" || status.status == "idle"
+    }
+
     // MARK: - Runs
 
     public func start(_ bot: Bot, volume: VolumeStore, prompt: String) async throws -> String {
@@ -217,15 +226,31 @@ public final class CuaEngine: BotEngine {
     /// A link the iPhone app opens to reach this bot's computer directly:
     /// its spacesd address and token. On the same Mac (the iOS Simulator) the
     /// loopback address works; a phone elsewhere goes through the relay.
+    /// `CUA_BOTS_PAIRING_HOST` swaps the loopback host for one the phone can
+    /// reach (this Mac's Tailscale name). `CUA_BOTS_PAIRING_PORTS` names a
+    /// file of `<space name> <port>` lines: the port forwarded there to this
+    /// Space's spacesd, which stays the same when Docker picks a new loopback
+    /// port.
     public func pairingLink(_ bot: Bot) async throws -> String {
         guard let id = bot.spaceID else { throw EngineError.noSpace(bot.name) }
         let endpoint = try await cua.sandboxes().connect(name: id).service(name: "env").endpoint()
         let token = endpoint.headers.first { $0.name.lowercased().contains("authorization") }?.value
             .replacingOccurrences(of: "Bearer ", with: "") ?? ""
+        var url = URLComponents(string: endpoint.url)
+        let env = ProcessInfo.processInfo.environment
+        if let host = env["CUA_BOTS_PAIRING_HOST"], !host.isEmpty {
+            url?.host = host
+            let lines = env["CUA_BOTS_PAIRING_PORTS"].flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
+            let fields = lines?.split(separator: "\n").map { $0.split(separator: " ") }
+            if let port = fields?.first(where: { $0.first.map(String.init) == bot.spaceName })?.last.flatMap({ Int($0) }) {
+                url?.port = port
+            }
+        }
         var c = URLComponents()
         c.scheme = "cuabots"
         c.host = "direct"
-        c.queryItems = [URLQueryItem(name: "url", value: endpoint.url), URLQueryItem(name: "token", value: token)]
+        c.queryItems = [URLQueryItem(name: "url", value: url?.string ?? endpoint.url),
+                        URLQueryItem(name: "token", value: token)]
         return c.string ?? ""
     }
 

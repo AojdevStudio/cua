@@ -19,6 +19,8 @@ struct CuaBotsApp: App {
                 .task {
                     if let dir = ProcessInfo.processInfo.environment["CUA_BOTS_CAPTURE"] {
                         await CaptureTour(model: model, directory: URL(fileURLWithPath: dir)).run()
+                    } else {
+                        SelfHost.start(model)
                     }
                 }
         }
