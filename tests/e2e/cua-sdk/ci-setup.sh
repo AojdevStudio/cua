@@ -4,7 +4,7 @@
 #
 #   the cua SDK (release cdylib, staged for Python and Node), the cua CLI and
 #   cua-test-fixtures (debug), the TS package and its wasm browser build,
-#   Playwright's headless Chromium (into $CUA_E2E_PLAYWRIGHT_DIR), gVisor.
+#   Playwright (into $CUA_E2E_PLAYWRIGHT_DIR) with Google Chrome, gVisor.
 #   --images  linux (with a freshly built cua-spacesd) and the
 #             two plain images, rootfs form, host arch
 #   --disks   the VM disks of linux and plain/ubuntu-server into
@@ -52,12 +52,12 @@ command -v wasm-bindgen >/dev/null || cargo install --locked wasm-bindgen-cli --
 npm run build:browser
 end
 
-step "Playwright Chromium"
+step "Playwright and Google Chrome"
 pw="${CUA_E2E_PLAYWRIGHT_DIR:-$REPO/tests/e2e/cua-sdk/.playwright}"
 mkdir -p "$pw" && cd "$pw"
 [ -f package.json ] || echo '{"type":"module"}' >package.json
 npm i -s playwright@1
-if [ "$(uname -s)" = Linux ]; then npx playwright install --with-deps chromium-headless-shell; else npx playwright install chromium-headless-shell; fi
+if [ "$(uname -s)" = Linux ]; then npx playwright install --with-deps chrome; else npx playwright install chrome; fi
 end
 
 if [ "$IMAGES" = 1 ]; then

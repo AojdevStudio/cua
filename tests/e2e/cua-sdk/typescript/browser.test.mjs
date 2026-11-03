@@ -83,16 +83,16 @@ e.e2eTest("browser-sdk", "hermetic", "Chromium (Playwright): env over gRPC-Web",
     const from = process.env.CUA_E2E_PLAYWRIGHT_DIR ? join(process.env.CUA_E2E_PLAYWRIGHT_DIR, "package.json") : import.meta.url
     ;({ chromium } = createRequire(from)("playwright"))
   } catch {
-    e.skip("playwright is not installed (npm i -D playwright && npx playwright install chromium)")
+    e.skip("playwright is not installed (npm i -D playwright && npx playwright install chrome)")
   }
   const server = await serve()
   const origin = `http://127.0.0.1:${server.address().port}`
   let browser
   try {
-    browser = await chromium.launch()
+    browser = await chromium.launch({ channel: 'chrome', chromiumSandbox: true })
   } catch (err) {
     server.close()
-    e.skip(`no Chromium for Playwright: ${String(err.message).split("\n")[0]}`)
+    e.skip(`no Google Chrome for Playwright: ${String(err.message).split("\n")[0]}`)
   }
   try {
     const page = await browser.newPage()
