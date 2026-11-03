@@ -98,7 +98,7 @@ async function measureTiming() {
       }
     }
     if (!up) throw new Error(`vite preview did not start on ${base}`);
-    const browser = await chromium.launch();
+    const browser = await chromium.launch({ channel: 'chrome', chromiumSandbox: true });
     const out = {};
     try {
       for (const route of routes.map((r) => r.name).filter((n) => !n.includes("$"))) {

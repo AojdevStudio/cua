@@ -116,7 +116,7 @@ jobs:
         if: matrix.host == 'browser'
         working-directory: apps/cua-spaces-web
         run: |
-          npx playwright install --with-deps chromium
+          npx playwright install --with-deps chrome
           pnpm parity
       # Layout shift of every route's first load (CUA-1951): fails at 0.05 or more, or a first render over its loose budget.
       - name: Layout shift per route

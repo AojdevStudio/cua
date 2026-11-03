@@ -189,7 +189,7 @@ if (!base) {
 }
 
 await mkdir(outDir, { recursive: true });
-const browser = await chromium.launch();
+const browser = await chromium.launch({ channel: 'chrome', chromiumSandbox: true });
 try {
   for (const theme of THEMES) {
     if (process.env.ONLY === "new-space") {

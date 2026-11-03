@@ -29,7 +29,17 @@ export default defineConfig({
   },
   projects: ELECTRON
     ? [{ name: "electron" }]
-    : [{ name: "chromium", use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } }],
+    : [
+        {
+          name: "chromium",
+          use: {
+            ...devices["Desktop Chrome"],
+            viewport: { width: 1440, height: 900 },
+            // Google Chrome, not the bundled Chromium: it gets Chrome's security fixes first, and its sandbox stays on.
+            launchOptions: { channel: 'chrome', chromiumSandbox: true },
+          },
+        },
+      ],
   webServer: ELECTRON ? undefined : {
     command: `npx vite --port ${PORT} --strictPort`,
     cwd: "..",

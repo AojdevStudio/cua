@@ -75,6 +75,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: ./.github/actions/linux-rust-prep
+      # ci-setup.sh installs Playwright here and the suite loads it from here.
+      - run: echo "CUA_E2E_PLAYWRIGHT_DIR=$RUNNER_TEMP/pw" >>"$GITHUB_ENV"
       - name: Install protoc
         uses: ./.github/actions/setup-protoc
       - name: Install pinned Rust toolchain
@@ -112,7 +114,6 @@ jobs:
         env:
           LANES: ${{ github.event_name == 'workflow_dispatch' && inputs.lanes || 'hermetic,container' }}
           LANGS: ${{ github.event_name == 'workflow_dispatch' && inputs.langs || 'py,ts,rust' }}
-          CUA_E2E_PLAYWRIGHT_DIR: ${{ runner.temp }}/pw
           # cua keeps 5 GiB free by default. On this disposable runner, after
           # the setup and the Rust half's own debug build, that refused the
           # suite's 4 GiB image builds with 7.5 GiB still free.

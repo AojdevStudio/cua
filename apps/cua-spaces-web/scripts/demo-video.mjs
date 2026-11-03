@@ -35,7 +35,7 @@ for (let i = 0; i < 50; i++) {
 
 const frameDir = await mkdtemp(join(tmpdir(), "cua-demo-"));
 const frames = [];
-const browser = await chromium.launch();
+const browser = await chromium.launch({ channel: 'chrome', chromiumSandbox: true });
 try {
   const context = await browser.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: 1, colorScheme: "light" });
   await context.addInitScript(() => {
