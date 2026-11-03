@@ -12,9 +12,9 @@ const output = resolve(
 )
 const browser = await chromium.launch({
   headless: true,
-  executablePath:
-    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ??
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  channel: 'chrome',
+  chromiumSandbox: true,
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
 })
 
 for (const [name, width, height] of [

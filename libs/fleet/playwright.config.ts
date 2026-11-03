@@ -10,9 +10,12 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:5180",
     headless: process.env.CUA_E2E_HEADED !== "1",
-    launchOptions: localChromiumExecutable
-      ? { executablePath: localChromiumExecutable }
-      : undefined,
+    // Google Chrome, not the bundled Chromium: it gets Chrome's security fixes first, and its sandbox stays on.
+    launchOptions: {
+      channel: 'chrome',
+      chromiumSandbox: true,
+      executablePath: localChromiumExecutable,
+    },
   },
   webServer: {
     command: "VITE_CUA_LOCAL_VISUAL_PREVIEW=true npm run dev",
