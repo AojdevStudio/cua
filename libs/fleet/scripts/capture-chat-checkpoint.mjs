@@ -10,9 +10,9 @@ await mkdir(output, { recursive: true })
 
 const browser = await chromium.launch({
   headless: true,
-  executablePath:
-    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ??
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  channel: 'chrome',
+  chromiumSandbox: true,
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
 })
 
 async function open(width, height, suffix = "") {
